@@ -22,8 +22,9 @@ public final class MediaDownloader {
             URI uri = URI.create(item.url());
             if (!Set.of("http", "https").contains(uri.getScheme())) return false;
             Files.createDirectories(destination);
-            try (APIResponse response = context.request().get(item.url(),
-                    RequestOptions.create().setTimeout(45_000).setMaxRedirects(5))) {
+            APIResponse response = context.request().get(item.url(),
+                    RequestOptions.create().setTimeout(45_000).setMaxRedirects(5));
+            try {
                 if (response.status() == 401 || response.status() == 403 || response.status() == 429) {
                     status.accept("Access restricted or rate limited: " + response.status() + "; stopping downloads");
                     stopped.set(true);
@@ -49,7 +50,7 @@ public final class MediaDownloader {
                     Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
                 } finally { Files.deleteIfExists(tmp); }
                 return true;
-            }
+            } finally { response.dispose(); }
         } catch (Exception e) {
             status.accept("Download skipped: " + e.getMessage());
             return false;
