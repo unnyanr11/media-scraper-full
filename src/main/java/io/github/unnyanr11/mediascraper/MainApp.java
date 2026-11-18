@@ -50,6 +50,11 @@ public class MainApp extends Application {
             if (folder != null) { downloadPath = folder.toPath(); folderLabel.setText(folder.getAbsolutePath()); }
         });
         CheckBox downloadAll = new CheckBox("Download all discovered images/videos");
+        Spinner<Integer> pageLimit = new Spinner<>(1, 50, 1);
+        pageLimit.setEditable(true);
+        TextField urlFilter = new TextField();
+        urlFilter.setPromptText("Optional URL keyword filter");
+        HBox crawlerSettings = new HBox(8, new Label("Max pages:"), pageLimit, urlFilter);
         TableView<MediaItem> table = new TableView<>(discovered);
         TableColumn<MediaItem, String> type = new TableColumn<>("Type");
         type.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().type()));
@@ -93,8 +98,8 @@ public class MainApp extends Application {
         clearQueue.setOnAction(e -> { queuedUrls.clear(); queueStatus.setText("0 URLs queued"); });
         Button export = new Button("Export CSV");
         stop.setDisable(true);
-        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status));
-        update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status));
+        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
+        update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
         history.setOnAction(e -> {
             try (ScanStore store = new ScanStore()) {
                 discovered.setAll(store.history(url.getText().strip()));
@@ -119,7 +124,7 @@ public class MainApp extends Application {
         });
         HBox cookieRow = new HBox(8, pick, clear, cookies);
         HBox controls = new HBox(8, scan, update, history, stop, export);
-        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, clearQueue), queueStatus, controls, status, table);
+        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, clearQueue), crawlerSettings, queueStatus, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
         stage.setTitle("Media Scraper Full");
@@ -128,7 +133,7 @@ public class MainApp extends Application {
     }
 
     private void runScan(boolean updateOnly, TextField url, CheckBox downloadAll, Button scan, Button update,
-                         Button stop, Label status) {
+                         Button stop, Label status, int maxPages, String filter) {
         String address = url.getText().strip();
         if (!address.matches("https?://.+")) { status.setText("Enter an http(s) URL"); return; }
         Path folder = downloadAll.isSelected() ? downloadPath : null;
@@ -148,7 +153,7 @@ public class MainApp extends Application {
                     if (Thread.currentThread().isInterrupted()) break;
                     int currentNumber = ++number;
                     Platform.runLater(() -> status.setText("Scanning " + currentNumber + "/" + batch.size() + ": " + source));
-                    service.scan(source, selectedCookies, folder, updateOnly,
+                    service.scan(source, selectedCookies, folder, updateOnly, maxPages, filter,
                         item -> Platform.runLater(() -> discovered.add(item)),
                         message -> Platform.runLater(() -> status.setText("[" + currentNumber + "/" + batch.size() + "] " + message)));
                     if (service.isStopped()) break;
