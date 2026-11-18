@@ -29,10 +29,53 @@ jobs:
           $cp = Get-Content target/classpath.txt -Raw
           $env:PLAYWRIGHT_BROWSERS_PATH = "$PWD/target/package-input/browsers"
           java -cp $cp com.microsoft.playwright.CLI install chromium
+      - name: Run Chromium regression fixtures
+        shell: pwsh
+        run: |
+          $browser = Get-ChildItem target/package-input/browsers -Filter chrome.exe -File -Recurse | Select-Object -First 1
+          if (-not $browser) { throw "Chromium executable was not staged" }
+          mvn -B --no-transfer-progress "-Dmedia.chromium.path=$($browser.FullName)" test
       - name: Build Windows desktop executable image
         shell: pwsh
         run: |
           jpackage --type app-image --input target/package-input --dest target/dist --name MediaScraperFull --main-jar media-scraper-full-0.1.0-SNAPSHOT.jar --main-class io.github.unnyanr11.mediascraper.Launcher --vendor "Media Scraper Full" --app-version 0.1.0
+      - name: Smoke-test portable launcher
+        shell: pwsh
+        run: |
+          $test = Start-Process target/dist/MediaScraperFull/MediaScraperFull.exe -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Portable launcher exited with $($test.ExitCode)" }
+      - name: Build standalone MSI installer
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            $wix = Get-ChildItem "${env:ProgramFiles(x86)}" -Directory -Filter 'WiX Toolset v3*' |
+              Sort-Object Name -Descending | Select-Object -First 1
+            if (-not $wix) {
+              choco install wixtoolset --version=3.14.1 --yes --no-progress
+              if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed' }
+              $wix = Get-ChildItem "${env:ProgramFiles(x86)}" -Directory -Filter 'WiX Toolset v3*' |
+                Sort-Object Name -Descending | Select-Object -First 1
+            }
+            if (-not $wix) { throw 'WiX 3 was not found' }
+            $env:PATH = "$($wix.FullName)/bin;$env:PATH"
+          }
+          jpackage --type msi --app-image target/dist/MediaScraperFull --dest target/installer --name MediaScraperFull --vendor "Media Scraper Full" --app-version 0.1.0 --win-upgrade-uuid 03a4be1a-ce8d-4bbc-8f1c-7644fc55210c --win-menu --win-shortcut
+      - name: Smoke-test installed application
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem target/installer/*.msi | Select-Object -First 1).FullName
+          $install = Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /qn /norestart" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "MSI install exited with $($install.ExitCode)" }
+          $app = Join-Path $env:ProgramFiles 'MediaScraperFull/MediaScraperFull.exe'
+          $test = Start-Process $app -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($test.ExitCode -ne 0) { throw "Installed launcher exited with $($test.ExitCode)" }
+      - name: Upload standalone Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaScraperFull-Windows-installer
+          path: target/installer/*.msi
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload portable Windows app
         uses: actions/upload-artifact@v4
         with:

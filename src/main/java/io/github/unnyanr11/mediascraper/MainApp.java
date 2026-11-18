@@ -14,6 +14,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Locale;
 import java.util.LinkedHashSet;
 import java.util.List;
 import javafx.scene.input.Clipboard;
@@ -25,6 +28,10 @@ public class MainApp extends Application {
     private Path downloadPath;
     private Path rulesPath;
     private final List<String> queuedUrls = new ArrayList<>();
+    private final Map<String, SessionSelection> sessions = new HashMap<>();
+
+    private record SessionSelection(Path cookieFile, String proxy) {}
+    private record ScanTask(String source, TaskOptions options) {}
 
     @Override public void start(Stage stage) {
         TextField url = new TextField();
@@ -42,6 +49,10 @@ public class MainApp extends Application {
         });
         Button clear = new Button("Clear");
         clear.setOnAction(e -> {cookiePath = null; cookies.setText("No cookies (public browsing)");});
+        TextField proxy = new TextField();
+        proxy.setPromptText("HTTP proxy, e.g. http://proxy.example:8080");
+        Button configureQueue = new Button("Configure queued tasks");
+        configureQueue.setOnAction(e -> configureQueue(stage, proxy.getText()));
         Label status = new Label("Ready");
         Label folderLabel = new Label("No download folder selected");
         Button chooseFolder = new Button("Download folder...");
@@ -50,12 +61,13 @@ public class MainApp extends Application {
             var folder = chooser.showDialog(stage);
             if (folder != null) { downloadPath = folder.toPath(); folderLabel.setText(folder.getAbsolutePath()); }
         });
-        CheckBox downloadAll = new CheckBox("Download all discovered images/videos");
-        CheckBox archive = new CheckBox("Archive scanned pages (HTML + metadata)");
-        CheckBox parallel = new CheckBox("Parallel public downloads");
+        CheckBox downloadAll = new CheckBox("Download discovered files");
+        CheckBox archive = new CheckBox("Archive pages");
+        CheckBox parallel = new CheckBox("Parallel downloads");
         parallel.setSelected(true);
         Spinner<Integer> workers = new Spinner<>(1, 20, 4);
         workers.setEditable(true);
+        workers.setPrefWidth(75);
         Button rules = new Button("Load site rules...");
         Label rulesLabel = new Label("No rules");
         rules.setOnAction(e -> {
@@ -66,6 +78,7 @@ public class MainApp extends Application {
         });
         Spinner<Integer> pageLimit = new Spinner<>(1, 500, 10);
         pageLimit.setEditable(true);
+        pageLimit.setPrefWidth(85);
         TextField extensionFilter = new TextField();
         extensionFilter.setPromptText("File extensions: jpg,png,mp4,pdf,zip (optional)");
         TextField urlFilter = new TextField();
@@ -78,7 +91,7 @@ public class MainApp extends Application {
         TableColumn<MediaItem, String> link = new TableColumn<>("Discovered URL");
         link.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().url()));
         link.setPrefWidth(720);
-        table.getColumns().addAll(type, link);
+        table.getColumns().addAll(List.of(type, link));
         Button scan = new Button("Start scan");
         Button update = new Button("Update (new links)");
         Button history = new Button("Load saved links");
@@ -118,12 +131,75 @@ public class MainApp extends Application {
                 catch (Exception ex) { status.setText("Sequence error: " + ex.getMessage()); }
             });
         });
-        clearQueue.setOnAction(e -> { queuedUrls.clear(); queueStatus.setText("0 URLs queued"); });
+        clearQueue.setOnAction(e -> { queuedUrls.clear(); sessions.clear(); queueStatus.setText("0 URLs queued"); });
         Button export = new Button("Export CSV");
         Button exportJson = new Button("Export JSON");
+        Button backup = new Button("Export source backup");
+        Button pause = new Button("Pause downloads");
+        Button resume = new Button("Resume downloads");
         stop.setDisable(true);
-        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText(), extensionFilter.getText(), archive.isSelected(), parallel.isSelected(), workers.getValue()));
-        update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
+        pause.setDisable(true);
+        java.util.function.Consumer<Boolean> startScan = incremental -> {
+            try {
+                pageLimit.commitValue();
+                workers.commitValue();
+                if ((downloadAll.isSelected() || archive.isSelected()) && downloadPath == null) {
+                    status.setText("Select an output folder for downloads or archives");
+                    return;
+                }
+                var settings = new ScanService.Settings(downloadPath, downloadAll.isSelected(), archive.isSelected(),
+                    incremental, pageLimit.getValue(), urlFilter.getText().strip().toLowerCase(Locale.ROOT),
+                    ScanService.Settings.extensions(extensionFilter.getText()), parallel.isSelected() ? workers.getValue() : 1);
+                var batch = new ArrayList<ScanTask>();
+                List<String> addresses = queuedUrls.isEmpty() ? List.of(url.getText().strip()) : List.copyOf(queuedUrls);
+                for (String source : addresses) {
+                    ScanService.webUri(source);
+                    SessionSelection selection = sessions.getOrDefault(source, new SessionSelection(cookiePath, proxy.getText()));
+                    batch.add(new ScanTask(source, new TaskOptions(selection.cookieFile(), selection.proxy().strip(), rulesPath)));
+                }
+                discovered.clear();
+                startWorker(scan, update, resume, stop, pause, status, (service, report) -> {
+                    for (int i = 0; i < batch.size() && !service.isStopped(); i++) {
+                        ScanTask task = batch.get(i);
+                        String prefix = "[" + (i + 1) + "/" + batch.size() + "] ";
+                        report.accept(prefix + "Starting scan");
+                        service.scan(task.source(), task.options(), settings,
+                            item -> Platform.runLater(() -> discovered.add(item)), message -> report.accept(prefix + message));
+                    }
+                });
+            } catch (IllegalArgumentException ex) {
+                status.setText(ex.getMessage());
+            }
+        };
+        scan.setOnAction(e -> startScan.accept(false));
+        update.setOnAction(e -> startScan.accept(true));
+        pause.setOnAction(e -> {
+            ScanService service = current.get();
+            if (service != null) service.pauseDownloads();
+            status.setText("Downloads pause now or after the active scan. The queue is saved.");
+        });
+        resume.setOnAction(e -> {
+            try {
+                workers.commitValue();
+                int count = parallel.isSelected() ? workers.getValue() : 1;
+                startWorker(scan, update, resume, stop, pause, status,
+                    (service, report) -> service.resumeDownloads(count, report));
+            } catch (IllegalArgumentException ex) {
+                status.setText(ex.getMessage());
+            }
+        });
+        backup.setOnAction(e -> {
+            String source = url.getText().strip();
+            FileChooser chooser = new FileChooser();
+            chooser.setInitialFileName("source-backup.json");
+            var file = chooser.showSaveDialog(stage);
+            if (file == null) return;
+            try (ScanStore store = new ScanStore()) {
+                var entries = store.historyEntries(source);
+                JsonExporter.writeBackup(file.toPath(), source, entries);
+                status.setText("Exported " + entries.size() + " source records");
+            } catch (Exception ex) { status.setText("Backup export failed: " + ex.getMessage()); }
+        });
         history.setOnAction(e -> {
             try (ScanStore store = new ScanStore()) {
                 discovered.setAll(store.history(url.getText().strip()));
@@ -156,54 +232,100 @@ public class MainApp extends Application {
                 status.setText("Exported " + discovered.size() + " entries as JSON");
             } catch (IOException ex) { status.setText("JSON export failed: " + ex.getMessage()); }
         });
-        HBox cookieRow = new HBox(8, pick, clear, cookies);
-        HBox controls = new HBox(8, scan, update, history, stop, export, exportJson);
-        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, savedSources, clearQueue), new HBox(8, archive, parallel, new Label("Workers:"), workers, rules, rulesLabel), crawlerSettings, queueStatus, controls, status, table);
+        FlowPane cookieRow = new FlowPane(8, 6, pick, clear, cookies, proxy);
+        FlowPane controls = new FlowPane(8, 6, scan, update, history, stop, pause, resume, export, exportJson, backup);
+        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new FlowPane(8, 6, clipboard, importFile, sequence, savedSources, configureQueue, clearQueue), new FlowPane(8, 6, archive, parallel, new Label("Workers"), workers, rules, rulesLabel), crawlerSettings, queueStatus, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
         stage.setTitle("Media Scraper Full");
         stage.setScene(new Scene(root, 960, 620));
+        stage.setMinWidth(720);
+        stage.setMinHeight(520);
         stage.show();
     }
 
-    private void runScan(boolean updateOnly, TextField url, CheckBox downloadAll, Button scan, Button update,
-                         Button stop, Label status, int maxPages, String filter, String extensions, boolean archive, boolean parallel, int workers) {
-        String address = url.getText().strip();
-        if (queuedUrls.isEmpty() && !address.matches("https?://.+")) { status.setText("Enter an http(s) URL or import a queue"); return; }
-        Path folder = downloadAll.isSelected() ? downloadPath : null;
-        if (downloadAll.isSelected() && folder == null) { status.setText("Select a download folder first"); return; }
-        discovered.clear();
-        List<String> batch = queuedUrls.isEmpty() ? List.of(address) : List.copyOf(queuedUrls);
+    private void startWorker(Button scan, Button update, Button resume, Button stop, Button pause, Label status,
+                             java.util.function.BiConsumer<ScanService, java.util.function.Consumer<String>> work) {
         ScanService service = new ScanService();
-        current.set(service);
-        scan.setDisable(true);
-        update.setDisable(true);
-        stop.setDisable(false);
-        Path selectedCookies = cookiePath;
-        Path selectedRules = rulesPath;
+        if (!current.compareAndSet(null, service)) return;
+        List<Button> startButtons = List.of(scan, update, resume);
+        List<Button> stopButtons = List.of(stop, pause);
+        startButtons.forEach(button -> button.setDisable(true));
+        stopButtons.forEach(button -> button.setDisable(false));
         Thread worker = new Thread(() -> {
             try {
-                int number = 0;
-                for (String source : batch) {
-                    if (Thread.currentThread().isInterrupted()) break;
-                    int currentNumber = ++number;
-                    Platform.runLater(() -> status.setText("Scanning " + currentNumber + "/" + batch.size() + ": " + source));
-                    service.scan(source, selectedCookies, folder, updateOnly, maxPages, filter, extensions, archive, selectedRules, parallel ? workers : 1,
-                        item -> Platform.runLater(() -> discovered.add(item)),
-                        message -> Platform.runLater(() -> status.setText("[" + currentNumber + "/" + batch.size() + "] " + message)));
-                    if (service.isStopped()) break;
-                }
+                work.accept(service, message -> Platform.runLater(() -> status.setText(message)));
             } finally {
                 Platform.runLater(() -> {
-                    scan.setDisable(false);
-                    update.setDisable(false);
-                    stop.setDisable(true);
+                    startButtons.forEach(button -> button.setDisable(false));
+                    stopButtons.forEach(button -> button.setDisable(true));
                     current.compareAndSet(service, null);
                 });
             }
-        }, updateOnly ? "media-update" : "media-scan");
+        }, "media-worker");
         worker.setDaemon(true);
         worker.start();
+    }
+
+    private void configureQueue(Stage stage, String defaultProxy) {
+        Dialog<Void> dialog = new Dialog<>();
+        dialog.initOwner(stage);
+        dialog.setTitle("Queued scan sessions");
+        dialog.getDialogPane().getButtonTypes().add(ButtonType.CLOSE);
+        ListView<String> sources = new ListView<>(FXCollections.observableArrayList(queuedUrls));
+        sources.setPrefSize(650, 240);
+        Label selection = new Label("Select a queued URL");
+        Button choose = new Button("Set cookies and proxy");
+        Button publicSession = new Button("Use public session");
+        Button defaults = new Button("Use scan defaults");
+        sources.getSelectionModel().selectedItemProperty().addListener((observable, before, source) ->
+            showSession(selection, sessions.get(source)));
+        choose.setOnAction(e -> {
+            String source = sources.getSelectionModel().getSelectedItem();
+            if (source == null) return;
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("Select Netscape cookies for this URL");
+            var file = chooser.showOpenDialog(dialog.getDialogPane().getScene().getWindow());
+            if (file == null) return;
+            editSession(source, file.toPath(), defaultProxy, selection);
+        });
+        publicSession.setOnAction(e -> {
+            String source = sources.getSelectionModel().getSelectedItem();
+            if (source != null) editSession(source, null, defaultProxy, selection);
+        });
+        defaults.setOnAction(e -> {
+            sessions.remove(sources.getSelectionModel().getSelectedItem());
+            showSession(selection, null);
+        });
+        dialog.getDialogPane().setContent(new VBox(8, sources, selection, new HBox(8, choose, publicSession, defaults)));
+        dialog.showAndWait();
+    }
+
+    private void editSession(String source, Path file, String defaultProxy, Label label) {
+        String previous = sessions.getOrDefault(source, new SessionSelection(file, defaultProxy)).proxy();
+        TextInputDialog dialog = new TextInputDialog(previous);
+        dialog.setTitle("Task proxy");
+        dialog.setHeaderText("Enter an HTTP proxy or leave blank for a direct connection");
+        dialog.showAndWait().ifPresent(value -> {
+            try {
+                String address = value.strip();
+                new TaskOptions(file, address, null);
+                SessionSelection session = new SessionSelection(file, address);
+                sessions.put(source, session);
+                showSession(label, session);
+            } catch (IllegalArgumentException ex) {
+                label.setText(ex.getMessage());
+            }
+        });
+    }
+
+    private static void showSession(Label label, SessionSelection selection) {
+        if (selection == null) {
+            label.setText("Uses the scan's default cookies and proxy");
+        } else {
+            label.setText((selection.cookieFile() == null ? "Public session" : selection.cookieFile().getFileName().toString())
+                + (selection.proxy().isBlank() ? " · Direct connection" : " · " + selection.proxy()));
+        }
     }
 
     private void addQueued(List<String> additional, Label label) {

@@ -1,86 +1,80 @@
 # Media Scraper Full
 
-A local-first Java 21 / JavaFX desktop application for discovering publicly accessible or otherwise authorized images, videos, and post links.
+A local JavaFX desktop app for finding, downloading, and archiving public or otherwise authorized media.
 
-## Current capabilities
+## Windows
 
-- Paste a webpage URL and launch a scan without creating an app account.
-- Import a **Netscape-format `cookies.txt` file** for an individual scan; different scans can select different files.
-- Uses independent Playwright browser contexts (cookies are not shared between scans).
-- Scrolls incrementally to discover lazy-loaded links and media.
-- Finds media from `img`, `video`, `source`, `srcset`, and common Open Graph metadata.
-- Follows same-page carousel controls where available; results are best-effort, not guaranteed to cover every slide on every platform.
-- Background scanning with a Stop button; export discovered links as CSV.
-- Slows requests and halts on authentication challenges, rate limiting, or access errors; does not evade platform restrictions.
+Open the repository's [Windows build runs](https://github.com/unnyanr11/media-scraper-full/actions/workflows/windows-build.yml). From a successful run, download **MediaScraperFull-Windows-installer**, extract the artifact ZIP, and open the MSI. It includes Java and Chromium. **MediaScraperFull-Windows-portable** is also available as a self-contained app folder.
 
-## Requirements
+## Scan and download
 
-- JDK 21
-- Maven 3.9+
-- Playwright-compatible browser dependencies
+1. Paste a gallery, profile, post, thread, image-search URL, or direct file URL, or import a batch from the clipboard or a TXT/CSV file. **Generate sequence** expands patterns such as `https://example.org/image{001..100}.jpg`.
+2. Set **Max pages** (1–500), optional URL keyword and extension filters, and any site rules. Use **Configure queued tasks** to assign a separate session or HTTP proxy to individual URLs.
+3. Choose an output folder and select **Download discovered files** for automatic downloads. The app supports 1–20 workers and spaces requests to the same host.
+4. Use **Pause downloads** to leave transfers pending and **Resume downloads** to continue them, including after a restart. **Stop** also stops discovery. Servers that supply a usable validator and byte ranges can resume a partial file. Other servers start that file again.
+5. **Start scan** picks up a saved crawl frontier when available. **Update (new links)** starts at the source URL and reports records new to that source. Use **Load saved links** or **Export source backup** with the original source URL.
 
-## Run
+The browser and downloader support a per-task HTTP proxy in the form `http://host:port`. Leave it empty for a direct connection. A Netscape-format `cookies.txt` can be selected for the entire scan or assigned to an individual queued URL. Browser contexts are isolated. Pending tasks store a reference to the cookie file, so keep it available in the same location for authenticated downloads after restarting. Cookie values stay out of SQLite and exports.
+
+Scan history, crawl checkpoints, and pending transfers are stored in `~/.media-scraper-full/history.sqlite`. A signed media URL that expires can be rediscovered from its source post when the extractor can match it to the same asset. Access restrictions and rate limits can leave work pending.
+
+## Extraction and backups
+
+| Source | Extraction |
+| --- | --- |
+| Instagram | Posts and reels, visible carousel controls, and image/video candidates exposed in structured page data |
+| X / Twitter | Post images at original size, and direct video variants when exposed |
+| Pinterest | Pin images, including original-size CDN paths when applicable |
+| Reddit | Post galleries, original image hosts, and exposed direct videos |
+| YouTube | Video/post links, metadata, thumbnails, and progressive video URLs when directly published in the page |
+| Imgur | Gallery and album media exposed in the page |
+| DeviantArt | Deviation links, original linked images, and available page media |
+| Mastodon | Public profile pagination and original attachments when the instance exposes its API, with DOM extraction on supported pages |
+| Bluesky | Public author-feed pagination, post metadata, and full-size image attachments through AppView |
+| Google Images, Bing Images, Yandex Images | Original images when a search result exposes the source URL |
+| Generic pages | Largest advertised image variant, lazy-loaded media, direct file links, and bounded same-site crawling |
+
+Platform coverage depends on what the site returns to the selected session and within the configured crawl limit. DRM-protected media, ciphered YouTube formats, and HLS/DASH-only streams have no download support. Results can vary with site changes, account access, and platform restrictions.
+
+**Export source backup** writes JSON with observed posts and assets, IDs, available timestamps and captions, file URLs, and download status. The regular CSV and JSON exports operate on the result table.
+
+For a forum thread or another multi-page source, enable **Archive pages**. Open the generated `archive/<source>/index.html` in the output folder. Snapshots preserve readable content and link to other archived pages and locally downloaded attachments where available. Use **Download discovered files** if you want the attachments available offline too.
+
+### Custom extraction scripts
+
+**Load site rules** accepts a plain-text script with CSS selectors, URL attributes, and optional URL filters. These commands read the current page's DOM. They do not run shell commands or arbitrary JavaScript.
+
+```text
+# Extract original images from a gallery's data attribute.
+extract=image || .gallery img[data-full] || data-full
+extract=video || .player video || data-video
+extract=file || a.attachment || href
+extract=page || a.pagination-next || href
+exclude=/thumbnails/
+```
+
+Use `include=<Java regex>` to allow matching result URLs and `exclude=<Java regex>` to reject matching results. Page traversal can still follow pagination when an output filter excludes the page URL.
+
+## Build from source
+
+Use JDK 21 and Maven 3.9+.
 
 ```bash
-mvn clean javafx:run
+mvn clean verify
+mvn javafx:run
 ```
 
-On first launch Playwright may need its Chromium browser installed:
+Install Chromium via Playwright if it is unavailable:
 
 ```bash
-mvn dependency:build-classpath -Dmdep.outputFile=classpath.txt
-java -cp "$(cat classpath.txt)" com.microsoft.playwright.CLI install chromium
+mvn dependency:build-classpath -Dmdep.outputFile=target/classpath.txt
+java -cp "$(cat target/classpath.txt)" com.microsoft.playwright.CLI install chromium
 ```
 
-For Windows PowerShell, replace the second command with:
+PowerShell uses `java -cp (Get-Content target/classpath.txt -Raw) com.microsoft.playwright.CLI install chromium`.
 
-```powershell
-java -cp (Get-Content classpath.txt -Raw) com.microsoft.playwright.CLI install chromium
+To run the browser extraction and archive tests with an existing Chromium binary:
+
+```bash
+mvn -Dmedia.chromium.path=/path/to/chromium verify
 ```
-
-## Cookie handling
-
-Select **Browse cookies.txt** for each scan. The input must use the Netscape cookie-jar format (`# Netscape HTTP Cookie File`, or tab-separated cookie rows). `#HttpOnly_` prefix is supported. Expired entries are ignored. The app does **not** upload, commit, or save cookie values. The file is read locally for that scan only. Never commit cookie files to source control.
-
-Use only cookies for accounts that you own or are permitted to access; respecting access rules and rate limits remains your responsibility. Cookies do not guarantee account safety or access.
-
-## Limitations
-
-The initial implementation is a working general-purpose discovery baseline, **not** a complete, site-specific downloader. Some JavaScript-heavy carousels, feeds, videos, protected streams and private posts are not accessible; the tool won't bypass DRM, paywalls, or anti-bot systems. Add site-specific adapters and download management as separate modules.
-
-## Project structure
-
-- `src/main/java/.../MainApp.java` – JavaFX UI and CSV export.
-- `src/main/java/.../ScanService.java` – background browser scan, scrolling and discovery.
-- `src/main/java/.../NetscapeCookies.java` – Netscape cookie parser.
-- `src/main/java/.../MediaItem.java` – discovered-item data model.
-- `src/test/java/.../NetscapeCookiesTest.java` – cookie format tests.
-
-## Persistent links and incremental updates
-
-The app stores discovered links in a SQLite database at `~/.media-scraper-full/history.sqlite` (on Windows: `%USERPROFILE%\\.media-scraper-full\\history.sqlite`). No cookie values are stored in this database.
-
-- **Start scan** discovers accessible links and stores them for the supplied source URL.
-- **Load saved links** loads the complete stored history for that exact source URL.
-- **Update (new links)** rescans that source and displays only URLs not already in the database. If Download All is enabled, only newly discovered downloadable media are fetched; previously marked downloads are not repeated.
-- Links are retained after application restart. Records contain the source URL, media URL, type, post URL, first/last seen timestamps, and download-success flag.
-
-**Important:** Update uses fresh page scanning and URL deduplication; it is not yet a platform-specific feed cursor. It cannot guarantee detection of posts skipped by infinite-scroll limits, deleted posts, or platforms that hide content from the selected session. Use the *exact same source URL* when updating. Stable media filenames minimize overwrite risk.
-
-## WFDownloader-inspired features (experimental)
-
-- Import a URL list from the clipboard or a local TXT/CSV file, deduplicate it, and queue sources for sequential background scans.
-- Expand one numbered URL template such as `https://example.org/image{001..100}.jpg` (10,000 URL limit).
-- Download directly linked images and videos, including generated URLs; no page navigation required for direct media URLs.
-- Set a bounded **Max pages** (1–50) for same-host link traversal. Default is one page.
-- Apply an optional URL substring filter to discovered links.
-- Export the current result table as CSV.
-- Import Netscape-format `cookies.txt` for each run, keeping browser contexts isolated.
-- Persist links locally and use **Update** to show newly encountered URLs on a previously scanned source.
-- A GitHub Actions Windows build packages the Java runtime, dependencies, and Chromium into a portable app image. Download the `MediaScraperFull-Windows-portable` artifact from a successful workflow run and launch `MediaScraperFull.exe` inside the extracted folder. This is an app directory, not a single-file installer.
-
-### Gaps to WFDownloader feature parity
-
-No site-specific profile/gallery adapters for Instagram, X, Pinterest, Reddit, YouTube, Imgur, DeviantArt, Mastodon or Bluesky are bundled yet. Search engine full-resolution extraction, complex gallery completion, forum thread HTML archiving, metadata-rich social backups, proxy configuration, programmable site extensions, parallel/resumable transfers, URL refreshing and per-batch category management are not yet implemented. The initial general crawler cannot guarantee complete results on dynamic websites.
-
-This application handles public and otherwise authorized content and respects access restrictions and rate limits. It does not bypass access controls, DRM, or bans.
