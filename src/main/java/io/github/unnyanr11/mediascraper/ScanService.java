@@ -3,6 +3,8 @@ package io.github.unnyanr11.mediascraper;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.LoadState;
 import java.nio.file.Path;
+import java.nio.file.Files;
+import java.io.IOException;
 import java.net.URI;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -28,7 +30,7 @@ public final class ScanService {
         }
         try (ScanStore store = new ScanStore();
              Playwright playwright = Playwright.create();
-             Browser browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true))) {
+             Browser browser = playwright.chromium().launch(browserOptions())) {
             BrowserContext context = browser.newContext();
             try {
                 if (cookiesFile != null) {
@@ -117,6 +119,23 @@ public final class ScanService {
         } catch (Exception e) {
             status.accept("Scan failed: " + e.getMessage());
         }
+    }
+
+    private static BrowserType.LaunchOptions browserOptions() {
+        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(true);
+        // jpackage app image: <root>/runtime and <root>/app/browsers.
+        Path runtime = Path.of(System.getProperty("java.home"));
+        Path root = runtime.getParent();
+        if (root == null) return options;
+        Path browsers = root.resolve("app").resolve("browsers");
+        if (!Files.isDirectory(brows)) return options;
+        try (var files = Files.walk(brows, 6)) {
+            var chrome = files.filter(Files::isRegularFile)
+                .filter(path -> path.getFileName().toString().equalsIgnoreCase("chrome.exe"))
+                .findFirst();
+            chrome.ifPresent(options::setExecutablePath);
+        } catch (IOException ignored) {}
+        return options;
     }
 
     @SuppressWarnings("unchecked")
