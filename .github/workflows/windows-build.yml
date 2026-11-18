@@ -24,7 +24,7 @@ jobs:
       - name: Stage application and embedded Chromium
         shell: pwsh
         run: |
-          Copy-Item target/media-scraper-full-0.1.0-SNAPSHOT.jar target/package-input/
+          Copy-Item target/media-scraper-full-0.1.1-SNAPSHOT.jar target/package-input/
           mvn -B --no-transfer-progress dependency:build-classpath "-Dmdep.outputFile=target/classpath.txt"
           $cp = Get-Content target/classpath.txt -Raw
           $env:PLAYWRIGHT_BROWSERS_PATH = "$PWD/target/package-input/browsers"
@@ -38,7 +38,7 @@ jobs:
       - name: Build Windows desktop executable image
         shell: pwsh
         run: |
-          jpackage --type app-image --input target/package-input --dest target/dist --name MediaScraperFull --main-jar media-scraper-full-0.1.0-SNAPSHOT.jar --main-class io.github.unnyanr11.mediascraper.Launcher --vendor "Media Scraper Full" --app-version 0.1.0
+          jpackage --type app-image --input target/package-input --dest target/dist --name MediaScraperFull --main-jar media-scraper-full-0.1.1-SNAPSHOT.jar --main-class io.github.unnyanr11.mediascraper.Launcher --vendor "Media Scraper Full" --app-version 0.1.1
       - name: Smoke-test portable launcher
         shell: pwsh
         run: |
@@ -59,7 +59,7 @@ jobs:
             if (-not $wix) { throw 'WiX 3 was not found' }
             $env:PATH = "$($wix.FullName)/bin;$env:PATH"
           }
-          jpackage --type msi --app-image target/dist/MediaScraperFull --dest target/installer --name MediaScraperFull --vendor "Media Scraper Full" --app-version 0.1.0 --win-upgrade-uuid 03a4be1a-ce8d-4bbc-8f1c-7644fc55210c --win-menu --win-shortcut
+          jpackage --type msi --app-image target/dist/MediaScraperFull --dest target/installer --name MediaScraperFull --vendor "Media Scraper Full" --app-version 0.1.1 --win-upgrade-uuid 03a4be1a-ce8d-4bbc-8f1c-7644fc55210c --win-menu --win-shortcut
       - name: Smoke-test installed application
         shell: pwsh
         run: |
