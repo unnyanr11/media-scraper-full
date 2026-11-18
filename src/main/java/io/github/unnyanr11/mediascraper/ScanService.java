@@ -19,7 +19,7 @@ public final class ScanService {
     public void stop() { stopped.set(true); }
     public boolean isStopped() { return stopped.get(); }
 
-    public void scan(String target, Path cookiesFile, Path downloadFolder, boolean updateOnly, int maxPages, String urlFilter, Consumer<MediaItem> onItem, Consumer<String> status) {
+    public void scan(String target, Path cookiesFile, Path downloadFolder, boolean updateOnly, int maxPages, String urlFilter, String extensions, Consumer<MediaItem> onItem, Consumer<String> status) {
         stopped.set(false);
         seen.clear();
         items.clear();
@@ -63,7 +63,7 @@ public final class ScanService {
                 queue.add(target);
                 int pages = 0;
                 String host = uri.getHost().toLowerCase(Locale.ROOT);
-                while (!queue.isEmpty() && !stopped.get() && pages < Math.max(1, Math.min(50, maxPages))) {
+                while (!queue.isEmpty() && !stopped.get() && pages < Math.max(1, Math.min(500, maxPages))) {
                     String pageUrl = queue.removeFirst();
                     if (!visited.add(pageUrl)) continue;
                     pages++;
@@ -87,7 +87,7 @@ public final class ScanService {
                     int lastCount = -1;
                     int limit = pages == 1 ? 80 : 12;
                     for (int scroll = 0; scroll < limit && !stopped.get(); scroll++) {
-                        collect(page, context, downloadFolder, store, target, updateOnly, urlFilter, onItem, status);
+                        collect(page, context, downloadFolder, store, target, updateOnly, urlFilter, extensions, onItem, status);
                         if (items.size() == lastCount) idle++; else idle = 0;
                         lastCount = items.size();
                         if (idle >= 6) break;
@@ -140,7 +140,7 @@ public final class ScanService {
     }
 
     @SuppressWarnings("unchecked")
-    private void collect(Page page, BrowserContext context, Path folder, ScanStore store, String source, boolean updateOnly, String urlFilter, Consumer<MediaItem> consumer, Consumer<String> status) {
+    private void collect(Page page, BrowserContext context, Path folder, ScanStore store, String source, boolean updateOnly, String urlFilter, String extensions, Consumer<MediaItem> consumer, Consumer<String> status) {
         Object result = page.evaluate("""
           () => {
             const found = [];
@@ -174,6 +174,13 @@ public final class ScanService {
             String url = String.valueOf(map.get("url"));
             String type = String.valueOf(map.get("type"));
             if (urlFilter != null && !urlFilter.isBlank() && !url.toLowerCase(Locale.ROOT).contains(urlFilter.toLowerCase(Locale.ROOT))) continue;
+            if (extensions != null && !extensions.isBlank() && !type.equals("page")) {
+                String path = URI.create(url).getPath().toLowerCase(Locale.ROOT);
+                boolean matches = Arrays.stream(extensions.toLowerCase(Locale.ROOT).split(","))
+                    .map(String::trim).map(ext -> ext.replaceFirst("^\\\\.", ""))
+                    .filter(ext -> !ext.isBlank()).anyMatch(ext -> path.endsWith("." + ext));
+                if (!matches) continue;
+            }
             if (seen.add(type + "|" + url)) {
                 MediaItem item = new MediaItem(page.url(), url, type);
                 items.add(item);
