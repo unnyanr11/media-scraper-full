@@ -55,3 +55,14 @@ The initial implementation is a working general-purpose discovery baseline, **no
 - `src/main/java/.../NetscapeCookies.java` – Netscape cookie parser.
 - `src/main/java/.../MediaItem.java` – discovered-item data model.
 - `src/test/java/.../NetscapeCookiesTest.java` – cookie format tests.
+
+## Persistent links and incremental updates
+
+The app stores discovered links in a SQLite database at `~/.media-scraper-full/history.sqlite` (on Windows: `%USERPROFILE%\\.media-scraper-full\\history.sqlite`). No cookie values are stored in this database.
+
+- **Start scan** discovers accessible links and stores them for the supplied source URL.
+- **Load saved links** loads the complete stored history for that exact source URL.
+- **Update (new links)** rescans that source and displays only URLs not already in the database. If Download All is enabled, only newly discovered downloadable media are fetched; previously marked downloads are not repeated.
+- Links are retained after application restart. Records contain the source URL, media URL, type, post URL, first/last seen timestamps, and download-success flag.
+
+**Important:** Update uses fresh page scanning and URL deduplication; it is not yet a platform-specific feed cursor. It cannot guarantee detection of posts skipped by infinite-scroll limits, deleted posts, or platforms that hide content from the selected session. Use the *exact same source URL* when updating. Stable media filenames minimize overwrite risk.
