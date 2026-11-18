@@ -53,9 +53,10 @@ public final class UrlSources {
         String suffix = template.substring(matcher.end());
         int width = matcher.group(1).length();
         List<String> urls = new ArrayList<>();
-        for (int i = start; i <= end; i++) {
-            String candidate = prefix + String.format("%0" + width + "d", i) + suffix;
-            if (fromText(candidate).size() != 1 || !candidate.equals(fromText(candidate).get(0)))
+        for (long i = start; i <= end; i++) {
+            String candidate = prefix + String.format(java.util.Locale.ROOT, "%0" + width + "d", i) + suffix;
+            var parsed = fromText(candidate);
+            if (parsed.size() != 1 || !candidate.equals(parsed.getFirst()))
                 throw new IllegalArgumentException("Generated sequence must consist of valid http(s) URLs");
             urls.add(candidate);
         }

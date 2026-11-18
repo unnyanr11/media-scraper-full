@@ -16,7 +16,8 @@ class BrowserFixturesTest {
     private static Browser browser;
 
     @BeforeAll static void openBrowser() {
-        Assumptions.assumeTrue(System.getProperty("media.chromium.path") != null || System.getenv("MEDIA_CHROMIUM_PATH") != null);
+        Assumptions.assumeTrue(System.getProperty("media.chromium.path") != null || System.getenv("MEDIA_CHROMIUM_PATH") != null
+            || System.getProperty("media.chromium.channel") != null);
         playwright = ScanService.playwright();
         browser = ScanService.browser(playwright, PUBLIC);
     }
@@ -234,6 +235,44 @@ class BrowserFixturesTest {
             var statuses = new ArrayList<String>();
             new ScanService(workspace.resolve("authenticated.sqlite")).scan(source, options, settings, results::add, statuses::add);
             assertTrue(results.stream().anyMatch(item -> item.url().endsWith("/private.png")), statuses::toString);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test void crawlsOpenDirectoriesAndScansPodcastFeeds() throws Exception {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try {
+            server.createContext("/", exchange -> {
+                try (exchange) {
+                    String path = exchange.getRequestURI().getPath();
+                    String content = switch(path) {
+                        case "/podcast" -> """
+                            <rss><channel><item><title>Sample podcast</title>
+                            <enclosure url="/episode.mp3" type="audio/mpeg"/></item></channel></rss>
+                            """;
+                        case "/files/" -> "<a href='sub/'>Subfolder</a><a href='../wrong/'>Outside</a>";
+                        case "/files/sub/" -> "<a href='downloads'>Extensionless file</a>";
+                        default -> "";
+                    };
+                    byte[] bytes = content.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", path.equals("/podcast") ? "application/rss+xml" : "text/html");
+                    exchange.sendResponseHeaders(200, bytes.length);
+                    exchange.getResponseBody().write(bytes);
+                }
+            });
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            var service = new ScanService(workspace.resolve("lists.sqlite"));
+            var settings = new ScanService.Settings(null, false, false, false, 2, "", Set.of(), 1);
+            var results = new ArrayList<MediaItem>();
+            var messages = new ArrayList<String>();
+            service.scan(base + "/podcast", PUBLIC, settings.withMode(ScanService.Mode.FEED), results::add, messages::add);
+            assertEquals(List.of(base + "/episode.mp3"), results.stream().map(MediaItem::url).toList(), messages::toString);
+
+            results.clear();
+            service.scan(base + "/files/", PUBLIC, settings.withMode(ScanService.Mode.DIRECTORY), results::add, messages::add);
+            assertEquals(List.of(base + "/files/sub/downloads"), results.stream().map(MediaItem::url).toList(), messages::toString);
         } finally {
             server.stop(0);
         }

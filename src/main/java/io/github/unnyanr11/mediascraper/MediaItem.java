@@ -15,7 +15,7 @@ public record MediaItem(String postUrl, String url, String type, String postId,
     }
 
     public boolean downloadable() {
-        return type.equals("image") || type.equals("video") || type.equals("file");
+        return type.equals("image") || type.equals("video") || type.equals("file") || type.equals("hls");
     }
 
     String identity() {

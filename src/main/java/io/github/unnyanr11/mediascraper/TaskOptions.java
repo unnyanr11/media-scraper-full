@@ -8,7 +8,10 @@ import java.net.ProxySelector;
 import java.net.URI;
 import java.nio.file.Path;
 
-record TaskOptions(CookieInput cookies, String proxy, Path rules) {
+record TaskOptions(CookieInput cookies, String proxy, Path rules, NetworkSettings network) {
+    TaskOptions(CookieInput cookies, String proxy, Path rules) {
+        this(cookies, proxy, rules, NetworkSettings.DEFAULT);
+    }
     TaskOptions {
         if (!proxy.isBlank()) {
             URI address = URI.create(proxy);

@@ -4,15 +4,19 @@ A local JavaFX desktop app for finding, downloading, and archiving public or oth
 
 ## Windows
 
-Open the repository's [Windows build runs](https://github.com/unnyanr11/media-scraper-full/actions/workflows/windows-build.yml). From a successful run, download **MediaScraperFull-Windows-installer**, extract the artifact ZIP, and open the MSI. It includes Java and Chromium. **MediaScraperFull-Windows-portable** is also available as a self-contained app folder.
+Download **MediaScraperFull-Windows-installer** from a successful [Windows build](https://github.com/unnyanr11/media-scraper-full/actions/workflows/windows-build.yml), extract the ZIP, and open the MSI. The Windows x64 package includes Java and its Playwright driver. It uses Microsoft Edge already installed on Windows for page scans and browser sign-in. Direct downloads work without launching Edge. **MediaScraperFull-Windows-portable** is available from the same build.
 
-## Scan and download
+## Desktop screens
 
-1. Paste a gallery, profile, post, thread, image-search URL, or direct file URL, or import a batch from the clipboard or a TXT/CSV file. **Generate sequence** expands patterns such as `https://example.org/image{001..100}.jpg`.
-2. Set **Max pages** (1–500), optional URL keyword and extension filters, and any site rules. Use **Configure queued tasks** to assign a separate session or HTTP proxy to individual URLs.
-3. Choose an output folder and select **Download discovered files** for automatic downloads. The app supports 1–20 workers and spaces requests to the same host.
-4. Use **Pause downloads** to leave transfers pending and **Resume downloads** to continue them, including after a restart. **Stop** also stops discovery. Servers that supply a usable validator and byte ranges can resume a partial file. Other servers start that file again.
-5. **Start scan** picks up a saved crawl frontier when available. **Update (new links)** starts at the source URL and reports records new to that source. Use **Load saved links** or **Export source backup** with the original source URL.
+| Screen | What you can do |
+| --- | --- |
+| Scan | Scan a site, RSS/Atom feed, open directory, or direct URL. Pick media types, a crawl limit, URL and extension filters, and an output folder. Paste or import cookies, or start an interactive browser sign-in and capture its session. |
+| Batches | Import clipboard, TXT, CSV or dropped URLs and apply an import filter. Generate numbered links such as `https://example.org/image{001..100}.jpg`. Organize saved sources into categories, sort the table, and update one source, the current category, or all batches. |
+| Results | Filter and sort results, queue selected files, load history, and export TXT, CSV, JSON or a metadata-rich profile backup. |
+| Downloads | View pending transfers, use up to 20 workers, and pause or resume saved work. |
+| Settings | Set the crawl delay, per-host download delay, request timeout, download retries, user agent, and optional non-credential request headers. |
+
+**Start scan** picks up a saved crawl frontier when available. **Update** starts from the source URL and reports new results, allowing newly found files to be downloaded. Servers that supply usable range and validation headers can resume partway through a file. Other servers restart that file. Select **Open directory** for directory listings with extensionless entries. Choose **RSS / Atom / podcast** for a feed with enclosure links. Select **Direct file URL** for files without a recognizable extension.
 
 The browser and downloader support a per-task HTTP proxy in the form `http://host:port`. Leave it empty for a direct connection. Click **Paste cookies…** and paste the full tab-separated Netscape text, including any header or comment lines, or select a `cookies.txt` file. Both inputs work as scan defaults or for an individual queued URL under **Configure queued tasks**. Browser contexts are isolated. Pasted cookies stay in memory while the app is open. To resume their pending downloads after restarting, paste fresh cookies, select the same source and output folder, enable downloads, and run the scan again. For file-based cookies, keep the file in the same location. Cookie values stay out of SQLite and exports.
 
@@ -29,12 +33,15 @@ Scan history, crawl checkpoints, and pending transfers are stored in `~/.media-s
 | YouTube | Video/post links, metadata, thumbnails, and progressive video URLs when directly published in the page |
 | Imgur | Gallery and album media exposed in the page |
 | DeviantArt | Deviation links, original linked images, and available page media |
+| Tumblr | Post links, structured metadata and media exposed in the page |
+| ArtStation | Project links and page media |
+| Pexels | Photo and video pages and exposed media variants |
 | Mastodon | Public profile pagination and original attachments when the instance exposes its API, with DOM extraction on supported pages |
 | Bluesky | Public author-feed pagination, post metadata, and full-size image attachments through AppView |
 | Google Images, Bing Images, Yandex Images | Original images when a search result exposes the source URL |
 | Generic pages | Largest advertised image variant, lazy-loaded media, direct file links, and bounded same-site crawling |
 
-Platform coverage depends on what the site returns to the selected session and within the configured crawl limit. DRM-protected media, ciphered YouTube formats, and HLS/DASH-only streams have no download support. Results can vary with site changes, account access, and platform restrictions.
+Platform coverage depends on what each site exposes to the selected session and within the configured crawl limit. The downloader handles unencrypted on-demand HLS with multiplexed MPEG-TS or fragmented MP4 segments and resumes using completed segments. Live or encrypted HLS, separate audio renditions, byte-range playlists, DASH, and ciphered YouTube formats are unsupported. Results can vary with site changes and access restrictions.
 
 **Export source backup** writes JSON with observed posts and assets, IDs, available timestamps and captions, file URLs, and download status. The regular CSV and JSON exports operate on the result table.
 

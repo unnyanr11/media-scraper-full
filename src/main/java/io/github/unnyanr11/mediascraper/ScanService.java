@@ -20,7 +20,17 @@ public final class ScanService {
     private static final Pattern FILE = Pattern.compile("(?i)\\.(pdf|zip|rar|7z|gz|tgz|tar|mp3|flac|wav|ogg|m4a|aac|epub|csv|txt|docx?|xlsx?|pptx?|exe|msi)$");
 
     record Settings(Path folder, boolean download, boolean archive, boolean updateOnly, int maxPages,
-                    String keyword, Set<String> extensions, int workers) {
+                    String keyword, Set<String> extensions, int workers, Set<String> mediaTypes, Mode mode) {
+        Settings(Path folder, boolean download, boolean archive, boolean updateOnly, int maxPages,
+                 String keyword, Set<String> extensions, int workers) {
+            this(folder, download, archive, updateOnly, maxPages, keyword, extensions, workers, Set.of(), Mode.AUTO);
+        }
+
+        Settings withMode(Mode replacement) {
+            return new Settings(folder, download, archive, updateOnly, maxPages, keyword, extensions,
+                workers, mediaTypes, replacement);
+        }
+
         static Set<String> extensions(String value) {
             Set<String> result = new HashSet<>();
             for (String extension : value.toLowerCase(Locale.ROOT).split(",")) {
@@ -31,19 +41,33 @@ public final class ScanService {
         }
     }
 
+    enum Mode {
+        AUTO("Website or profile"), FEED("RSS / Atom / podcast"), DIRECTORY("Open directory"),
+        DIRECT("Direct file URL");
+        private final String label;
+        Mode(String label) { this.label = label; }
+        @Override public String toString() { return label; }
+    }
+
     private final AtomicBoolean stopped = new AtomicBoolean();
     private final AtomicBoolean downloadsPaused = new AtomicBoolean();
     private volatile DownloadQueue transfers;
     private final Path history;
     private final Map<String, CookieInput> pasted;
+    private final NetworkSettings network;
 
     public ScanService() { this(null); }
 
     ScanService(Path history) { this(history, Map.of()); }
 
     ScanService(Path history, Map<String, CookieInput> pasted) {
+        this(history, pasted, NetworkSettings.DEFAULT);
+    }
+
+    ScanService(Path history, Map<String, CookieInput> pasted, NetworkSettings network) {
         this.history = history;
         this.pasted = Map.copyOf(pasted);
+        this.network = network;
     }
 
     private ScanStore openStore() throws SQLException {
@@ -67,19 +91,20 @@ public final class ScanService {
         if (isStopped()) return;
         try (ScanStore store = openStore()) {
             URI uri = webUri(target);
-            store.rememberSource(target);
+            store.saveMode(target, settings.mode);
             SiteRules rules = options.rules() == null ? SiteRules.empty() : SiteRules.load(options.rules());
             Session session = new Session(target, options, settings, rules, store, onItem);
             String direct = directType(uri);
+            if (direct == null && settings.mode == Mode.DIRECT) direct = "file";
             List<Cookie> cookies = null;
             int pages = 0;
-            if (direct != null) {
+            if (direct != null && settings.mode != Mode.FEED && settings.mode != Mode.DIRECTORY) {
                 session.accept(new MediaItem(target, target, direct, target, "", "", MediaItem.stableUrl(target)));
             } else {
                 try (Playwright playwright = playwright();
                      Browser browser = browser(playwright, options);
                      BrowserContext context = context(browser, options)) {
-                    pages = crawl(uri, context, session, status);
+                    pages = settings.mode == Mode.FEED ? scanFeed(context, session) : crawl(uri, context, session, status);
                     cookies = context.cookies();
                 }
             }
@@ -91,7 +116,7 @@ public final class ScanService {
                     // An explicit new session for this source can reauthenticate jobs from before restart.
                     for (var job : jobs) {
                         if (!job.options().needsPastedCookies()) continue;
-                        var restored = new TaskOptions(options.cookies(), job.options().proxy(), job.options().rules());
+                        var restored = new TaskOptions(options.cookies(), job.options().proxy(), job.options().rules(), network);
                         store.enqueue(new ScanStore.Transfer(job.source(), job.item(), job.folder(), restored));
                     }
                     jobs = store.pending(target, settings.folder, pasted);
@@ -104,6 +129,21 @@ public final class ScanService {
                 + " results · " + downloaded + " files saved" + (pending > 0 ? " · " + pending + " downloads pending" : ""));
         } catch (Exception e) {
             status.accept("Scan failed: " + e.getMessage());
+        }
+    }
+
+    void queueDownloads(List<MediaItem> items, Path folder, TaskOptions options, Consumer<String> status) {
+        try (ScanStore store = openStore()) {
+            for (MediaItem item : items) {
+                if (isStopped()) break;
+                if (!item.downloadable()) continue;
+                store.record(item.postUrl(), item);
+                if (!store.downloaded(item.postUrl(), item))
+                    store.enqueue(new ScanStore.Transfer(item.postUrl(), item, folder, options));
+            }
+            status.accept("Selected files added to the download queue");
+        } catch (SQLException e) {
+            status.accept("Unable to queue downloads: " + e.getMessage());
         }
     }
 
@@ -127,7 +167,7 @@ public final class ScanService {
     private int runTransfers(ScanStore store, List<ScanStore.Transfer> jobs, TaskOptions options, List<Cookie> cookies,
                              int workers, Consumer<String> status) throws SQLException, InterruptedException, IOException {
         if (jobs.isEmpty() || isStopped()) return 0;
-        try (DownloadQueue queue = new DownloadQueue(store, workers, status)) {
+        try (DownloadQueue queue = new DownloadQueue(store, workers, status, network)) {
             transfers = queue;
             if (isStopped() || downloadsPaused.get()) queue.pause();
             int completed = queue.download(jobs, options, cookies);
@@ -138,6 +178,23 @@ public final class ScanService {
         }
     }
 
+    private int scanFeed(BrowserContext context, Session session) throws IOException, SQLException {
+        var response = context.request().get(session.target, RequestOptions.create()
+            .setTimeout(session.options.network().timeoutSeconds() * 1000.0));
+        try {
+            if (!response.ok()) throw new IOException("Feed returned HTTP " + response.status());
+            String xml = response.text();
+            if (xml.length() > 10_000_000) throw new IOException("Feed is larger than 10 MB");
+            for (MediaItem item : MediaLists.feed(xml, response.url())) {
+                if (isStopped()) break;
+                session.accept(item);
+            }
+            return 1;
+        } finally {
+            response.dispose();
+        }
+    }
+
     private int crawl(URI target, BrowserContext context, Session session, Consumer<String> status) throws Exception {
         var saved = session.settings.updateOnly ? new ScanStore.Checkpoint(List.of(), List.of()) : session.store.checkpoint(session.target);
         Set<String> visited = new LinkedHashSet<>(saved.visited());
@@ -145,7 +202,7 @@ public final class ScanService {
         if (frontier.isEmpty()) frontier.add(target.toString());
         HtmlArchive archive = session.settings.archive ? new HtmlArchive(session.settings.folder, session.target) : null;
         Page page = context.newPage();
-        page.setDefaultTimeout(8_000);
+        page.setDefaultTimeout(session.options.network().timeoutSeconds() * 1000.0);
         int pages = 0;
         try {
             while (!frontier.isEmpty() && !isStopped() && pages < Math.clamp(session.settings.maxPages, 1, 500)) {
@@ -167,12 +224,12 @@ public final class ScanService {
                     frontier.remove(address);
                     visited.add(address);
                     saveProgress(session, frontier, visited);
-                    Thread.sleep(350);
+                    Thread.sleep(session.options.network().crawlDelayMs());
                     continue;
                 }
                 Response response;
                 try {
-                    response = navigate(page, address);
+                    response = navigate(page, address, session.options.network());
                 } catch (PlaywrightException e) {
                     status.accept("Skipping an inaccessible page");
                     frontier.remove(address);
@@ -207,7 +264,22 @@ public final class ScanService {
                     }
                 }
                 Set<String> candidates = new LinkedHashSet<>();
-                Set<MediaItem> attachments = extractPage(page, session, candidates);
+                Set<MediaItem> attachments;
+                if (session.settings.mode == Mode.DIRECTORY) {
+                    var directory = MediaLists.directory(page.content(), page.url());
+                    attachments = new LinkedHashSet<>();
+                    for (MediaItem file : directory.files()) if (session.accept(file)) attachments.add(file);
+                    candidates.addAll(directory.folders());
+                } else if (response != null && response.headers().getOrDefault("content-type", "")
+                    .matches("(?i).*(?:application/(?:rss|atom)\\+xml).*")) {
+                    attachments = new LinkedHashSet<>();
+                    String xml = response.text();
+                    if (xml.length() <= 10_000_000) {
+                        for (MediaItem item : MediaLists.feed(xml, page.url())) if (session.accept(item)) attachments.add(item);
+                    }
+                } else {
+                    attachments = extractPage(page, session, candidates);
+                }
                 if (archive != null) archive.save(page, address, attachments);
                 if (address.equals(target.toString()) && !sameHost(target, webUri(page.url()))) {
                     visited.add(page.url());
@@ -261,7 +333,7 @@ public final class ScanService {
             if (idle >= 3) break;
             try {
                 page.evaluate("() => window.scrollBy(0, Math.max(500, window.innerHeight * .85))");
-                page.waitForTimeout(550);
+                page.waitForTimeout(session.options.network().crawlDelayMs());
             } catch (PlaywrightException ignored) {
                 break;
             }
@@ -311,7 +383,7 @@ public final class ScanService {
              Browser browser = browser(playwright, options);
              BrowserContext context = context(browser, options)) {
             Page page = context.newPage();
-            Response response = navigate(page, old.postUrl());
+            Response response = navigate(page, old.postUrl(), options.network());
             if (restricted(response) || accessWall(page) || response != null && response.status() >= 400) return null;
             SiteRules rules = options.rules() == null ? SiteRules.empty() : SiteRules.load(options.rules());
             for (int i = 0; i < 8; i++) {
@@ -347,8 +419,8 @@ public final class ScanService {
             || page.locator("form#challenge-form, iframe[src*='challenges.cloudflare.com'], iframe[src*='/recaptcha/api2/bframe']").count() > 0;
     }
 
-    private static Response navigate(Page page, String url) {
-        return page.navigate(url, new Page.NavigateOptions().setTimeout(30_000).setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
+    private static Response navigate(Page page, String url, NetworkSettings network) {
+        return page.navigate(url, new Page.NavigateOptions().setTimeout(network.timeoutSeconds() * 1000.0).setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
     }
 
     static Playwright playwright() {
@@ -356,17 +428,22 @@ public final class ScanService {
         if (executable == null) executable = System.getenv("MEDIA_CHROMIUM_PATH");
         if (executable == null) executable = bundledBrowser().map(Path::toString).orElse(null);
         Playwright.CreateOptions options = new Playwright.CreateOptions();
-        if (executable != null) options.setEnv(Map.of("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1"));
+        if (executable != null || System.getProperty("media.chromium.channel") != null) options.setEnv(Map.of("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1"));
         return Playwright.create(options);
     }
 
     static Browser browser(Playwright playwright, TaskOptions task) {
-        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(true);
+        return browser(playwright, task, true);
+    }
+
+    static Browser browser(Playwright playwright, TaskOptions task, boolean headless) {
+        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(headless);
         if (!task.proxy().isBlank()) options.setProxy(new Proxy(task.proxy()).setBypass("<-loopback>"));
         String executable = System.getProperty("media.chromium.path");
         if (executable == null) executable = System.getenv("MEDIA_CHROMIUM_PATH");
         if (executable == null) executable = bundledBrowser().map(Path::toString).orElse(null);
         if (executable != null) options.setExecutablePath(Path.of(executable));
+        else if (System.getProperty("media.chromium.channel") != null) options.setChannel(System.getProperty("media.chromium.channel"));
         return playwright.chromium().launch(options);
     }
 
@@ -383,14 +460,18 @@ public final class ScanService {
         }
     }
 
-    private static BrowserContext context(Browser browser, TaskOptions options) throws IOException {
-        BrowserContext context = browser.newContext();
+    static BrowserContext context(Browser browser, TaskOptions options) throws IOException {
+        Browser.NewContextOptions contextOptions = new Browser.NewContextOptions();
+        if (!options.network().userAgent().isBlank()) contextOptions.setUserAgent(options.network().userAgent());
+        if (!options.network().headers().isEmpty()) contextOptions.setExtraHTTPHeaders(options.network().headers());
+        BrowserContext context = browser.newContext(contextOptions);
         if (options.cookies() != null) context.addCookies(options.loadCookies());
         return context;
     }
 
-    private static String directType(URI uri) {
+    static String directType(URI uri) {
         String path = uri.getPath();
+        if (path.toLowerCase(Locale.ROOT).endsWith(".m3u8")) return "hls";
         if (IMAGE.matcher(path).find()) return "image";
         if (VIDEO.matcher(path).find()) return "video";
         if (FILE.matcher(path).find()) return "file";
@@ -419,6 +500,7 @@ public final class ScanService {
 
         boolean accept(MediaItem item) throws SQLException {
             String url = item.url();
+            if (!settings.mediaTypes.isEmpty() && !settings.mediaTypes.contains(item.type())) return false;
             if (!rules.allows(url) || !url.toLowerCase(Locale.ROOT).contains(settings.keyword)) return false;
             if (item.downloadable() && !settings.extensions.isEmpty()) {
                 String path = URI.create(url).getPath().toLowerCase(Locale.ROOT);

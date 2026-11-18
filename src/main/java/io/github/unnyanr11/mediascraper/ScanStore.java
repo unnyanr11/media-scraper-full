@@ -37,6 +37,11 @@ public final class ScanStore implements AutoCloseable {
                 )
                 """);
             stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS source_profiles (
+                  source_url TEXT PRIMARY KEY, category TEXT NOT NULL, mode TEXT NOT NULL
+                )
+                """);
+            stmt.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS assets (
                   source TEXT NOT NULL, type TEXT NOT NULL, identity TEXT NOT NULL,
                   post_url TEXT NOT NULL, url TEXT NOT NULL, post_id TEXT NOT NULL,
@@ -91,6 +96,37 @@ public final class ScanStore implements AutoCloseable {
 
     public synchronized List<String> sources() throws SQLException {
         return strings("SELECT source_url FROM sources ORDER BY last_scan DESC");
+    }
+
+    record SavedSource(String url, String category, ScanService.Mode mode) {}
+
+    synchronized List<SavedSource> savedSources() throws SQLException {
+        List<SavedSource> result = new ArrayList<>();
+        try (var stmt = statement("""
+            SELECT s.source_url,COALESCE(p.category,''),COALESCE(p.mode,'AUTO')
+            FROM sources s LEFT JOIN source_profiles p USING (source_url)
+            ORDER BY p.category COLLATE NOCASE, s.last_scan DESC
+            """); var rs = stmt.executeQuery()) {
+            while (rs.next()) result.add(new SavedSource(rs.getString(1), rs.getString(2),
+                ScanService.Mode.valueOf(rs.getString(3))));
+        }
+        return result;
+    }
+
+    synchronized void saveSource(String source, String category, ScanService.Mode mode) throws SQLException {
+        rememberSource(source);
+        update("""
+            INSERT INTO source_profiles VALUES (?,?,?)
+            ON CONFLICT(source_url) DO UPDATE SET category=excluded.category, mode=excluded.mode
+            """, source, category, mode.name());
+    }
+
+    synchronized void saveMode(String source, ScanService.Mode mode) throws SQLException {
+        rememberSource(source);
+        update("""
+            INSERT INTO source_profiles VALUES (?,'',?)
+            ON CONFLICT(source_url) DO UPDATE SET mode=excluded.mode
+            """, source, mode.name());
     }
 
     record Checkpoint(List<String> pending, List<String> visited) {}

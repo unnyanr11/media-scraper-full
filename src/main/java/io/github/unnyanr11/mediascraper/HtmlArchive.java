@@ -86,7 +86,7 @@ final class HtmlArchive {
             Document page = Jsoup.parse(Files.readString(path));
             for (var link : page.select("a[data-file-key]")) {
                 String key = link.attr("data-file-key");
-                if (!key.matches("(?:image|video|file)_[a-f0-9]{32}")) continue;
+                if (!key.matches("(?:image|video|file|hls)_[a-f0-9]{32}")) continue;
                 try (var assets = Files.newDirectoryStream(folder, key + ".*")) {
                     for (Path asset : assets) {
                         String nameOfAsset = asset.getFileName().toString();

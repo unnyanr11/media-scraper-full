@@ -19,6 +19,10 @@ record CookieInput(String reference, List<Cookie> pasted) {
     static CookieInput paste(String text) throws IOException {
         List<Cookie> cookies = NetscapeCookies.parse(text);
         if (cookies.isEmpty()) throw new IOException("Paste at least one unexpired Netscape cookie.");
+        return fromBrowser(cookies);
+    }
+
+    static CookieInput fromBrowser(List<Cookie> cookies) {
         return new CookieInput(PASTED + UUID.randomUUID(), List.copyOf(cookies));
     }
 
@@ -36,7 +40,7 @@ record CookieInput(String reference, List<Cookie> pasted) {
         if (!available()) throw new IOException("Paste the cookies again for this task.");
         if (pasted == null) return NetscapeCookies.load(Path.of(reference));
         long now = Instant.now().getEpochSecond();
-        List<Cookie> valid = pasted.stream().filter(cookie -> cookie.expires == null || cookie.expires > now).toList();
+        List<Cookie> valid = pasted.stream().filter(cookie -> cookie.expires == null || cookie.expires <= 0 || cookie.expires > now).toList();
         if (valid.isEmpty()) throw new IOException("The pasted cookies expired. Paste fresh cookies for this task.");
         return valid;
     }

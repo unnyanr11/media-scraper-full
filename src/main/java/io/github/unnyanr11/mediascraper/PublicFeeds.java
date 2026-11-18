@@ -97,10 +97,12 @@ final class PublicFeeds {
                 items.add(new MediaItem(url, full, "image", id, time, caption, asset));
             }
         }
-        // AppView may provide only an HLS playlist for a clip. The post is still archived.
         String video = string(embed, "url");
-        if (downloadUrl(video) && URI.create(video).getPath().endsWith(".mp4")) {
-            items.add(new MediaItem(url, video, "video", id, time, caption, MediaItem.stableUrl(video)));
+        if (video.isBlank()) video = string(embed, "playlist");
+        if (downloadUrl(video)) {
+            String type = ScanService.directType(URI.create(video));
+            if ("video".equals(type) || "hls".equals(type))
+                items.add(new MediaItem(url, video, type, id, time, caption, MediaItem.stableUrl(video)));
         }
     }
 

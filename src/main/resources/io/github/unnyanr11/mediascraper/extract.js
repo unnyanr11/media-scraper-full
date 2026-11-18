@@ -15,7 +15,7 @@
             return url;
         } catch { return null; }
     };
-    const kind = url => /\.(jpe?g|png|gif|webp|avif|svg|bmp|tiff?|ico|heic|jxl)$/i.test(url.pathname) ? 'image'
+    const kind = url => /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(jpe?g|png|gif|webp|avif|svg|bmp|tiff?|ico|heic|jxl)$/i.test(url.pathname) ? 'image'
         : /\.(mp4|webm|mov|m4v|ogv|mkv)$/i.test(url.pathname) ? 'video'
         : /\.(pdf|zip|rar|7z|gz|tgz|tar|mp3|flac|wav|ogg|m4a|aac|epub|csv|txt|docx?|xlsx?|pptx?|exe|msi)$/i.test(url.pathname) ? 'file' : '';
     const canonical = asUrl(document.querySelector('link[rel=canonical]')?.href) || asUrl(location.href);
@@ -64,8 +64,8 @@
         const raw = asUrl(value);
         if (!raw) return;
         const url = original(raw);
-        const type = hint || kind(url);
-        if (!type || /\.(?:m3u8|mpd)$/i.test(url.pathname)) return;
+        const type = kind(url) === 'hls' ? 'hls' : hint || kind(url);
+        if (!type || /\.mpd$/i.test(url.pathname)) return;
         const asset = assetId || stableAsset(url.href);
         const key = info.id + '|' + type + '|' + asset;
         if ((media.get(key)?.priority ?? -1) <= priority) media.set(key, {...info, url: url.href, type, asset, priority});

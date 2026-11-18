@@ -18,7 +18,6 @@ import java.util.regex.Pattern;
 final class DownloadQueue implements AutoCloseable {
     private static final Set<Integer> RESTRICTED = Set.of(401, 403, 429);
     private static final Pattern CONTENT_RANGE = Pattern.compile("bytes (\\d+)-(\\d+)/(\\d+)");
-    private static final Duration IDLE_TIMEOUT = Duration.ofSeconds(45);
     private final ExecutorService workers;
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private final Set<InputStream> active = ConcurrentHashMap.newKeySet();
@@ -30,10 +29,16 @@ final class DownloadQueue implements AutoCloseable {
     private final Set<String> blockedHosts = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean paused = new AtomicBoolean();
     private final ScanStore store;
+    private final NetworkSettings network;
     private final Consumer<String> status;
 
     DownloadQueue(ScanStore store, int concurrency, Consumer<String> status) {
+        this(store, concurrency, status, NetworkSettings.DEFAULT);
+    }
+
+    DownloadQueue(ScanStore store, int concurrency, Consumer<String> status, NetworkSettings network) {
         this.store = store;
+        this.network = network;
         this.status = status;
         workers = Executors.newFixedThreadPool(Math.clamp(concurrency, 1, 20));
     }
@@ -51,8 +56,11 @@ final class DownloadQueue implements AutoCloseable {
         List<Future<Result>> results = new ArrayList<>();
         Set<String> scheduled = new HashSet<>();
         List<ScanStore.Transfer> duplicates = new ArrayList<>();
-        for (var job : jobs) {
+        for (var storedJob : jobs) {
             if (isPaused()) break;
+            var task = storedJob.options();
+            var job = new ScanStore.Transfer(storedJob.source(), storedJob.item(), storedJob.folder(),
+                new TaskOptions(task.cookies(), task.proxy(), task.rules(), network));
             if (job.options().needsPastedCookies()) continue;
             if (!scheduled.add(job.folder() + "|" + fileKey(job.item()))) {
                 duplicates.add(job);
@@ -60,11 +68,13 @@ final class DownloadQueue implements AutoCloseable {
             }
             List<Cookie> cookies = job.options().equals(currentOptions) ? currentCookies : null;
             results.add(workers.submit(() -> {
-                try {
-                    return transfer(job, cookies, true);
-                } catch (HttpTimeoutException | EOFException e) {
-                    if (!isPaused()) return transfer(job, cookies, false);
-                    return new Result(job, false);
+                for (int attempt = 0;; attempt++) {
+                    try {
+                        return transfer(job, cookies, true);
+                    } catch (IOException e) {
+                        if (isPaused()) return new Result(job, false);
+                        if (e instanceof PlaylistException || attempt >= network.retries()) throw e;
+                    }
                 }
             }));
         }
@@ -77,7 +87,8 @@ final class DownloadQueue implements AutoCloseable {
                     count++;
                 }
             } catch (ExecutionException e) {
-                status.accept("Download remains pending: " + e.getCause().getClass().getSimpleName());
+                status.accept("Download remains pending · " + (e.getCause() instanceof PlaylistException
+                    ? e.getCause().getMessage() : e.getCause().getClass().getSimpleName()));
             }
         }
         for (var job : duplicates) {
@@ -100,12 +111,12 @@ final class DownloadQueue implements AutoCloseable {
         URI uri = URI.create(item.url());
         String host = uri.getHost();
         if (blockedHosts.contains(host)) return new Result(job, false);
+        if (item.type().equals("hls")) return new Result(job, downloadPlaylist(job, cookies, key));
         Path part = folder.resolve(key + ".part");
         Path metadata = folder.resolve(key + ".resume");
         Resume resume = readResume(metadata, part, item.url());
         long offset = resume == null ? 0 : Files.size(part);
-        HttpRequest.Builder request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(45))
-            .header("User-Agent", "MediaScraperFull/0.2").header("Accept-Encoding", "identity");
+        HttpRequest.Builder request = requestBuilder(uri);
         if (offset > 0) request.header("Range", "bytes=" + offset + "-").header("If-Range", resume.value);
         waitForHost(host);
         if (isPaused() || blockedHosts.contains(host)) return new Result(job, false);
@@ -121,7 +132,7 @@ final class DownloadQueue implements AutoCloseable {
                 return new Result(job, false);
             }
             if (!expired && (code == 408 || code >= 500 && code <= 599)) {
-                // Close the response before a bounded transient failure retry.
+                throw new IOException("Temporary HTTP " + code);
             } else if (!expired && code == 416 && offset > 0) {
                 Files.deleteIfExists(metadata);
             } else if (!expired && (code == 200 || code == 206)) {
@@ -174,6 +185,96 @@ final class DownloadQueue implements AutoCloseable {
         return transfer(new ScanStore.Transfer(job.source(), refresh.item(), folder, job.options()), refresh.cookies(), false);
     }
 
+    private static final class PlaylistException extends IOException {
+        private PlaylistException(String message) { super(message); }
+    }
+
+    private HttpRequest.Builder requestBuilder(URI uri) {
+        var request = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(network.timeoutSeconds()))
+            .header("User-Agent", network.userAgent().isBlank() ? "MediaScraperFull/0.2" : network.userAgent())
+            .header("Accept-Encoding", "identity");
+        network.headers().forEach(request::header);
+        return request;
+    }
+
+    private HttpResponse<InputStream> playlistRequest(HttpClient client, String url)
+            throws IOException, InterruptedException {
+        URI uri = ScanService.webUri(url);
+        waitForHost(uri.getHost());
+        if (isPaused() || blockedHosts.contains(uri.getHost())) return null;
+        var reply = request(client, requestBuilder(uri).GET().build());
+        if (reply == null || reply.statusCode() == 200) return reply;
+        reply.body().close();
+        if (RESTRICTED.contains(reply.statusCode())) blockedHosts.add(uri.getHost());
+        throw new PlaylistException("HLS resource returned HTTP " + reply.statusCode());
+    }
+
+    private boolean downloadPlaylist(ScanStore.Transfer job, List<Cookie> cookies, String key)
+            throws IOException, InterruptedException {
+        HttpClient client = client(job.options(), cookies);
+        String url = job.item().url();
+        HlsPlaylist playlist = null;
+        for (int depth = 0; depth < 4 && !isPaused(); depth++) {
+            var reply = playlistRequest(client, url);
+            if (reply == null) return false;
+            try (var body = reply.body()) {
+                active.add(body);
+                var timeout = timer.schedule(() -> closeBody(body), network.timeoutSeconds(), TimeUnit.SECONDS);
+                try {
+                    byte[] text = body.readNBytes(2_000_001);
+                    if (text.length > 2_000_000) throw new PlaylistException("HLS playlist exceeds 2 MB");
+                    try {
+                        playlist = HlsPlaylist.parse(new String(text, StandardCharsets.UTF_8), reply.uri().toString());
+                    } catch (IOException e) {
+                        throw new PlaylistException(e.getMessage());
+                    }
+                } finally {
+                    timeout.cancel(false);
+                    active.remove(body);
+                }
+            }
+            if (playlist.variant() == null) break;
+            url = playlist.variant();
+        }
+        if (isPaused()) return false;
+        if (playlist == null || playlist.variant() != null) throw new PlaylistException("Too many HLS playlist levels");
+        Path cache = job.folder().resolve(key + ".segments");
+        Files.createDirectories(cache);
+        Path merged = job.folder().resolve(key + ".part");
+        try (var out = Files.newOutputStream(merged)) {
+            for (int index = 0; index < playlist.parts().size(); index++) {
+                if (isPaused()) return false;
+                String partUrl = playlist.parts().get(index);
+                String id = fileKey(new MediaItem(url, partUrl, "segment"));
+                Path savedPart = cache.resolve(index + "-" + id);
+                if (!Files.isRegularFile(savedPart)) {
+                    var reply = playlistRequest(client, partUrl);
+                    if (reply == null) return false;
+                    Path pending = cache.resolve("pending");
+                    try (var body = reply.body()) {
+                        String mime = reply.headers().firstValue("Content-Type").orElse("");
+                        if (mime.contains("text/html") || mime.contains("application/json")) {
+                            throw new PlaylistException("HLS segment response was not media");
+                        }
+                        long bytes = reply.headers().firstValueAsLong("Content-Length").orElse(-1);
+                        if (!copy(body, pending, 0, bytes)) return false;
+                    }
+                    Files.move(pending, savedPart, StandardCopyOption.REPLACE_EXISTING);
+                }
+                Files.copy(savedPart, out);
+            }
+        }
+        if (isPaused()) return false;
+        Path destination = job.folder().resolve(key + "." + playlist.extension());
+        Files.move(merged, destination, StandardCopyOption.REPLACE_EXISTING);
+        try (var entries = Files.list(cache)) {
+            for (Path entry : entries.toList()) Files.deleteIfExists(entry);
+        }
+        Files.deleteIfExists(cache);
+        status.accept("Saved " + destination.getFileName());
+        return true;
+    }
+
     private HttpResponse<InputStream> request(HttpClient client, HttpRequest request) throws IOException, InterruptedException {
         var pending = client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream());
         connecting.add(pending);
@@ -199,7 +300,7 @@ final class DownloadQueue implements AutoCloseable {
         HttpClient existing = clients.get(key);
         if (existing != null) return existing;
         if (cookies == null) cookies = options.loadCookies();
-        HttpClient next = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20))
+        HttpClient next = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(network.timeoutSeconds()))
             .proxy(options.proxySelector()).cookieHandler(new TransferCookies(cookies))
             .followRedirects(HttpClient.Redirect.NORMAL).build();
         clients.put(key, next);
@@ -211,7 +312,7 @@ final class DownloadQueue implements AutoCloseable {
         synchronized (nextRequest) {
             long now = System.nanoTime();
             long start = Math.max(nextRequest.getOrDefault(host, now), now);
-            nextRequest.put(host, start + Duration.ofMillis(300).toNanos());
+            nextRequest.put(host, start + Duration.ofMillis(network.downloadDelayMs()).toNanos());
             wait = start - now;
         }
         while (wait > 0 && !isPaused()) {
@@ -225,7 +326,7 @@ final class DownloadQueue implements AutoCloseable {
         active.add(body);
         var lastByte = new java.util.concurrent.atomic.AtomicLong(System.nanoTime());
         var timeout = timer.scheduleAtFixedRate(() -> {
-            if (System.nanoTime() - lastByte.get() >= IDLE_TIMEOUT.toNanos()) closeBody(body);
+            if (System.nanoTime() - lastByte.get() >= Duration.ofSeconds(network.timeoutSeconds()).toNanos()) closeBody(body);
         }, 1, 1, TimeUnit.SECONDS);
         try {
             try (var out = Files.newOutputStream(part, StandardOpenOption.CREATE,
