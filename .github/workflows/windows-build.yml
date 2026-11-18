@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  windows-package:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,13 +17,25 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
-      - name: Test and package JAR
+      - name: Compile and test
         run: mvn -B --no-transfer-progress clean verify
-      - name: Upload JAR
+      - name: Collect runtime dependencies
+        run: mvn -B --no-transfer-progress dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/package-input
+      - name: Stage application and embedded Chromium
+        shell: pwsh
+        run: |
+          Copy-Item target/media-scraper-full-0.1.0-SNAPSHOT.jar target/package-input/
+          mvn -B --no-transfer-progress dependency:build-classpath "-Dmdep.outputFile=target/classpath.txt"
+          $cp = Get-Content target/classpath.txt -Raw
+          $env:PLAYWRIGHT_BROWSERS_PATH = "$PWD/target/package-input/browsers"
+          java -cp $cp com.microsoft.playwright.CLI install chromium
+      - name: Build Windows desktop executable image
+        shell: pwsh
+        run: |
+          jpackage --type app-image --input target/package-input --dest target/dist --name MediaScraperFull --main-jar media-scraper-full-0.1.0-SNAPSHOT.jar --main-class io.github.unnyanr11.mediascraper.Launcher --vendor "Media Scraper Full" --app-version 0.1.0
+      - name: Upload portable Windows app
         uses: actions/upload-artifact@v4
         with:
-          name: media-scraper-jar
-          path: target/*.jar
-
-# A truly standalone .exe requires a runtime image and Playwright browser packaging.
-# This workflow intentionally does not advertise the plain Maven jar as an installer.
+          name: MediaScraperFull-Windows-portable
+          path: target/dist/MediaScraperFull/
+          retention-days: 14
