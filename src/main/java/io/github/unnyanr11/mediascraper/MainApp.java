@@ -50,11 +50,13 @@ public class MainApp extends Application {
             if (folder != null) { downloadPath = folder.toPath(); folderLabel.setText(folder.getAbsolutePath()); }
         });
         CheckBox downloadAll = new CheckBox("Download all discovered images/videos");
-        Spinner<Integer> pageLimit = new Spinner<>(1, 50, 1);
+        Spinner<Integer> pageLimit = new Spinner<>(1, 500, 10);
         pageLimit.setEditable(true);
+        TextField extensionFilter = new TextField();
+        extensionFilter.setPromptText("File extensions: jpg,png,mp4,pdf,zip (optional)");
         TextField urlFilter = new TextField();
         urlFilter.setPromptText("Optional URL keyword filter");
-        HBox crawlerSettings = new HBox(8, new Label("Max pages:"), pageLimit, urlFilter);
+        HBox crawlerSettings = new HBox(8, new Label("Max pages:"), pageLimit, urlFilter, extensionFilter);
         TableView<MediaItem> table = new TableView<>(discovered);
         TableColumn<MediaItem, String> type = new TableColumn<>("Type");
         type.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().type()));
@@ -106,7 +108,7 @@ public class MainApp extends Application {
         Button export = new Button("Export CSV");
         Button exportJson = new Button("Export JSON");
         stop.setDisable(true);
-        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
+        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText(), extensionFilter.getText()));
         update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
         history.setOnAction(e -> {
             try (ScanStore store = new ScanStore()) {
@@ -151,9 +153,9 @@ public class MainApp extends Application {
     }
 
     private void runScan(boolean updateOnly, TextField url, CheckBox downloadAll, Button scan, Button update,
-                         Button stop, Label status, int maxPages, String filter) {
+                         Button stop, Label status, int maxPages, String filter, String extensions) {
         String address = url.getText().strip();
-        if (!address.matches("https?://.+")) { status.setText("Enter an http(s) URL"); return; }
+        if (queuedUrls.isEmpty() && !address.matches("https?://.+")) { status.setText("Enter an http(s) URL or import a queue"); return; }
         Path folder = downloadAll.isSelected() ? downloadPath : null;
         if (downloadAll.isSelected() && folder == null) { status.setText("Select a download folder first"); return; }
         discovered.clear();
@@ -171,7 +173,7 @@ public class MainApp extends Application {
                     if (Thread.currentThread().isInterrupted()) break;
                     int currentNumber = ++number;
                     Platform.runLater(() -> status.setText("Scanning " + currentNumber + "/" + batch.size() + ": " + source));
-                    service.scan(source, selectedCookies, folder, updateOnly, maxPages, filter,
+                    service.scan(source, selectedCookies, folder, updateOnly, maxPages, filter, extensions,
                         item -> Platform.runLater(() -> discovered.add(item)),
                         message -> Platform.runLater(() -> status.setText("[" + currentNumber + "/" + batch.size() + "] " + message)));
                     if (service.isStopped()) break;
