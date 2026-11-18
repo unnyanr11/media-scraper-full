@@ -31,7 +31,34 @@ public final class ScanStore implements AutoCloseable {
                   PRIMARY KEY (source_url, media_type, media_url)
                 )
                 """);
+            stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS sources (
+                  source_url TEXT PRIMARY KEY,
+                  last_scan TEXT NOT NULL
+                )
+                """);
         }
+    }
+
+    public synchronized void rememberSource(String source) throws SQLException {
+        try (PreparedStatement stmt = connection.prepareStatement("""
+            INSERT INTO sources (source_url, last_scan) VALUES (?, ?)
+            ON CONFLICT(source_url) DO UPDATE SET last_scan = excluded.last_scan
+            """)) {
+            stmt.setString(1, source);
+            stmt.setString(2, Instant.now().toString());
+            stmt.executeUpdate();
+        }
+    }
+
+    public synchronized List<String> sources() throws SQLException {
+        List<String> sources = new ArrayList<>();
+        try (PreparedStatement stmt = connection.prepareStatement(
+                "SELECT source_url FROM sources ORDER BY last_scan DESC");
+             ResultSet rs = stmt.executeQuery()) {
+            while (rs.next()) sources.add(rs.getString(1));
+        }
+        return sources;
     }
 
     public synchronized boolean record(String source, MediaItem item) throws SQLException {
