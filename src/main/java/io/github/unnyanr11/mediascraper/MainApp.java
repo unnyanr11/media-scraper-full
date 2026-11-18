@@ -23,6 +23,7 @@ public class MainApp extends Application {
     private final AtomicReference<ScanService> current = new AtomicReference<>();
     private Path cookiePath;
     private Path downloadPath;
+    private Path rulesPath;
     private final List<String> queuedUrls = new ArrayList<>();
 
     @Override public void start(Stage stage) {
@@ -50,6 +51,19 @@ public class MainApp extends Application {
             if (folder != null) { downloadPath = folder.toPath(); folderLabel.setText(folder.getAbsolutePath()); }
         });
         CheckBox downloadAll = new CheckBox("Download all discovered images/videos");
+        CheckBox archive = new CheckBox("Archive scanned pages (HTML + metadata)");
+        CheckBox parallel = new CheckBox("Parallel public downloads");
+        parallel.setSelected(true);
+        Spinner<Integer> workers = new Spinner<>(1, 20, 4);
+        workers.setEditable(true);
+        Button rules = new Button("Load site rules...");
+        Label rulesLabel = new Label("No rules");
+        rules.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setTitle("Choose site rules");
+            var file = chooser.showOpenDialog(stage);
+            if (file != null) { rulesPath = file.toPath(); rulesLabel.setText(file.getName()); }
+        });
         Spinner<Integer> pageLimit = new Spinner<>(1, 500, 10);
         pageLimit.setEditable(true);
         TextField extensionFilter = new TextField();
@@ -108,7 +122,7 @@ public class MainApp extends Application {
         Button export = new Button("Export CSV");
         Button exportJson = new Button("Export JSON");
         stop.setDisable(true);
-        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText(), extensionFilter.getText()));
+        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText(), extensionFilter.getText(), archive.isSelected(), parallel.isSelected(), workers.getValue()));
         update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
         history.setOnAction(e -> {
             try (ScanStore store = new ScanStore()) {
@@ -144,7 +158,7 @@ public class MainApp extends Application {
         });
         HBox cookieRow = new HBox(8, pick, clear, cookies);
         HBox controls = new HBox(8, scan, update, history, stop, export, exportJson);
-        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, savedSources, clearQueue), crawlerSettings, queueStatus, controls, status, table);
+        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, savedSources, clearQueue), new HBox(8, archive, parallel, new Label("Workers:"), workers, rules, rulesLabel), crawlerSettings, queueStatus, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
         stage.setTitle("Media Scraper Full");
@@ -153,7 +167,7 @@ public class MainApp extends Application {
     }
 
     private void runScan(boolean updateOnly, TextField url, CheckBox downloadAll, Button scan, Button update,
-                         Button stop, Label status, int maxPages, String filter, String extensions) {
+                         Button stop, Label status, int maxPages, String filter, String extensions, boolean archive, boolean parallel, int workers) {
         String address = url.getText().strip();
         if (queuedUrls.isEmpty() && !address.matches("https?://.+")) { status.setText("Enter an http(s) URL or import a queue"); return; }
         Path folder = downloadAll.isSelected() ? downloadPath : null;
@@ -166,6 +180,7 @@ public class MainApp extends Application {
         update.setDisable(true);
         stop.setDisable(false);
         Path selectedCookies = cookiePath;
+        Path selectedRules = rulesPath;
         Thread worker = new Thread(() -> {
             try {
                 int number = 0;
@@ -173,7 +188,7 @@ public class MainApp extends Application {
                     if (Thread.currentThread().isInterrupted()) break;
                     int currentNumber = ++number;
                     Platform.runLater(() -> status.setText("Scanning " + currentNumber + "/" + batch.size() + ": " + source));
-                    service.scan(source, selectedCookies, folder, updateOnly, maxPages, filter, extensions,
+                    service.scan(source, selectedCookies, folder, updateOnly, maxPages, filter, extensions, archive, selectedRules, parallel ? workers : 1,
                         item -> Platform.runLater(() -> discovered.add(item)),
                         message -> Platform.runLater(() -> status.setText("[" + currentNumber + "/" + batch.size() + "] " + message)));
                     if (service.isStopped()) break;
