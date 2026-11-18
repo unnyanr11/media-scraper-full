@@ -15,6 +15,7 @@ public final class ScanService {
     private final List<MediaItem> items = new ArrayList<>();
 
     public void stop() { stopped.set(true); }
+    public boolean isStopped() { return stopped.get(); }
 
     public void scan(String target, Path cookiesFile, Path downloadFolder, boolean updateOnly, Consumer<MediaItem> onItem, Consumer<String> status) {
         stopped.set(false);
