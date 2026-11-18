@@ -66,3 +66,21 @@ The app stores discovered links in a SQLite database at `~/.media-scraper-full/h
 - Links are retained after application restart. Records contain the source URL, media URL, type, post URL, first/last seen timestamps, and download-success flag.
 
 **Important:** Update uses fresh page scanning and URL deduplication; it is not yet a platform-specific feed cursor. It cannot guarantee detection of posts skipped by infinite-scroll limits, deleted posts, or platforms that hide content from the selected session. Use the *exact same source URL* when updating. Stable media filenames minimize overwrite risk.
+
+## WFDownloader-inspired features (experimental)
+
+- Import a URL list from the clipboard or a local TXT/CSV file, deduplicate it, and queue sources for sequential background scans.
+- Expand one numbered URL template such as `https://example.org/image{001..100}.jpg` (10,000 URL limit).
+- Download directly linked images and videos, including generated URLs; no page navigation required for direct media URLs.
+- Set a bounded **Max pages** (1–50) for same-host link traversal. Default is one page.
+- Apply an optional URL substring filter to discovered links.
+- Export the current result table as CSV.
+- Import Netscape-format `cookies.txt` for each run, keeping browser contexts isolated.
+- Persist links locally and use **Update** to show newly encountered URLs on a previously scanned source.
+- A GitHub Actions Windows build packages the Java runtime, dependencies, and Chromium into a portable app image. Download the `MediaScraperFull-Windows-portable` artifact from a successful workflow run and launch `MediaScraperFull.exe` inside the extracted folder. This is an app directory, not a single-file installer.
+
+### Gaps to WFDownloader feature parity
+
+No site-specific profile/gallery adapters for Instagram, X, Pinterest, Reddit, YouTube, Imgur, DeviantArt, Mastodon or Bluesky are bundled yet. Search engine full-resolution extraction, complex gallery completion, forum thread HTML archiving, metadata-rich social backups, proxy configuration, programmable site extensions, parallel/resumable transfers, URL refreshing and per-batch category management are not yet implemented. The initial general crawler cannot guarantee complete results on dynamic websites.
+
+This application handles public and otherwise authorized content and respects access restrictions and rate limits. It does not bypass access controls, DRM, or bans.
