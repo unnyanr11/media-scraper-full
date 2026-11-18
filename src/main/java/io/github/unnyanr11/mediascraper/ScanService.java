@@ -17,7 +17,7 @@ public final class ScanService {
     public void stop() { stopped.set(true); }
     public boolean isStopped() { return stopped.get(); }
 
-    public void scan(String target, Path cookiesFile, Path downloadFolder, boolean updateOnly, Consumer<MediaItem> onItem, Consumer<String> status) {
+    public void scan(String target, Path cookiesFile, Path downloadFolder, boolean updateOnly, int maxPages, String urlFilter, Consumer<MediaItem> onItem, Consumer<String> status) {
         stopped.set(false);
         seen.clear();
         items.clear();
@@ -55,33 +55,64 @@ public final class ScanService {
                 }
                 Page page = context.newPage();
                 page.setDefaultTimeout(10_000);
-                status.accept("Opening webpage...");
-                Response response = page.navigate(target, new Page.NavigateOptions().setTimeout(30_000));
-                if (response != null && (response.status() == 401 || response.status() == 403 || response.status() == 429)) {
-                    status.accept("Access denied or rate limited (" + response.status() + "); scan stopped");
-                    return;
-                }
-                try { page.waitForLoadState(LoadState.DOMCONTENTLOADED); } catch (PlaywrightException ignored) {}
-                int idle = 0;
-                int lastCount = -1;
-                for (int scroll = 0; scroll < 80 && !stopped.get(); scroll++) {
-                    collect(page, context, downloadFolder, store, target, updateOnly, onItem, status);
-                    if (items.size() == lastCount) idle++; else idle = 0;
-                    lastCount = items.size();
-                    status.accept("Scroll " + scroll + " | Discovered " + items.size() + " links");
-                    if (idle >= 6) break;
-                    // A single click can expose carousel slides that are absent from the initial DOM.
+                Deque<String> queue = new ArrayDeque<>();
+                Set<String> visited = new HashSet<>();
+                queue.add(target);
+                int pages = 0;
+                String host = uri.getHost().toLowerCase(Locale.ROOT);
+                while (!queue.isEmpty() && !stopped.get() && pages < Math.max(1, Math.min(50, maxPages))) {
+                    String pageUrl = queue.removeFirst();
+                    if (!visited.add(pageUrl)) continue;
+                    pages++;
+                    status.accept("Scanning page " + pages + ": " + pageUrl);
+                    Response response;
                     try {
-                        Locator next = page.locator("[aria-label='Next'], [aria-label='Next slide'], button.swiper-button-next");
-                        if (next.count() > 0 && next.first().isVisible()) {
-                            next.first().click(new Locator.ClickOptions().setTimeout(1500));
-                            collect(page, context, downloadFolder, store, target, updateOnly, onItem, status);
+                        response = page.navigate(pageUrl, new Page.NavigateOptions().setTimeout(30_000));
+                    } catch (PlaywrightException ex) {
+                        status.accept("Skipped inaccessible page: " + pageUrl);
+                        continue;
+                    }
+                    if (response != null && (response.status() == 401 || response.status() == 403
+                        || response.status() == 429)) {
+                        status.accept("Restricted or rate limited (" + response.status() + "); scan stopped");
+                        stopped.set(true);
+                        break;
+                    }
+                    try { page.waitForLoadState(LoadState.DOMCONTENTLOADED); }
+                    catch (PlaywrightException ignored) {}
+                    int idle = 0;
+                    int lastCount = -1;
+                    int limit = pages == 1 ? 80 : 12;
+                    for (int scroll = 0; scroll < limit && !stopped.get(); scroll++) {
+                        collect(page, context, downloadFolder, store, target, updateOnly, urlFilter, onItem, status);
+                        if (items.size() == lastCount) idle++; else idle = 0;
+                        lastCount = items.size();
+                        if (idle >= 6) break;
+                        try {
+                            Locator next = page.locator("[aria-label='Next'], [aria-label='Next slide'], button.swiper-button-next");
+                            if (next.count() > 0 && next.first().isVisible()) {
+                                next.first().click(new Locator.ClickOptions().setTimeout(1500));
+                                collect(page, context, downloadFolder, store, target, updateOnly, urlFilter, onItem, status);
+                            }
+                        } catch (PlaywrightException ignored) {}
+                        page.evaluate("() => window.scrollBy(0, Math.max(500, window.innerHeight * .85))");
+                        page.waitForTimeout(1100);
+                    }
+                    // Follow only same-host HTML pages, at a bounded depth and count.
+                    if (maxPages > 1) {
+                        for (MediaItem link : items) {
+                            if (!"page".equals(link.type()) || visited.contains(link.url())) continue;
+                            try {
+                                URI linked = URI.create(link.url());
+                                if (!host.equalsIgnoreCase(linked.getHost())) continue;
+                                if (!Set.of("http", "https").contains(linked.getScheme())) continue;
+                                if (linked.getPath().matches("(?i).*\\.(zip|exe|pdf|png|jpg|jpeg|gif|webp|mp4|mp3|webm)$")) continue;
+                                if (!queue.contains(link.url()) && queue.size() < 100) queue.addLast(link.url());
+                            } catch (IllegalArgumentException ignored) {}
                         }
-                    } catch (PlaywrightException ignored) {}
-                    page.evaluate("() => window.scrollBy(0, Math.max(500, window.innerHeight * .85))");
-                    page.waitForTimeout(1100);
+                    }
                 }
-                status.accept(stopped.get() ? "Stopped" : "Scan completed: " + items.size() + " links; " + downloaded + " files downloaded");
+                status.accept(stopped.get() ? "Stopped" : "Scan completed: " + pages + " pages, " + items.size() + " links; " + downloaded + " files downloaded");
             } finally { context.close(); }
         } catch (Exception e) {
             status.accept("Scan failed: " + e.getMessage());
@@ -89,7 +120,7 @@ public final class ScanService {
     }
 
     @SuppressWarnings("unchecked")
-    private void collect(Page page, BrowserContext context, Path folder, ScanStore store, String source, boolean updateOnly, Consumer<MediaItem> consumer, Consumer<String> status) {
+    private void collect(Page page, BrowserContext context, Path folder, ScanStore store, String source, boolean updateOnly, String urlFilter, Consumer<MediaItem> consumer, Consumer<String> status) {
         Object result = page.evaluate("""
           () => {
             const found = [];
@@ -122,6 +153,7 @@ public final class ScanService {
             if (!(value instanceof Map<?, ?> map)) continue;
             String url = String.valueOf(map.get("url"));
             String type = String.valueOf(map.get("type"));
+            if (urlFilter != null && !urlFilter.isBlank() && !url.toLowerCase(Locale.ROOT).contains(urlFilter.toLowerCase(Locale.ROOT))) continue;
             if (seen.add(type + "|" + url)) {
                 MediaItem item = new MediaItem(page.url(), url, type);
                 items.add(item);
