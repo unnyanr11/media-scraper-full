@@ -1,0 +1,29 @@
+name: Build Windows desktop application
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Test and package JAR
+        run: mvn -B --no-transfer-progress clean verify
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-scraper-jar
+          path: target/*.jar
+
+# A truly standalone .exe requires a runtime image and Playwright browser packaging.
+# This workflow intentionally does not advertise the plain Maven jar as an installer.
