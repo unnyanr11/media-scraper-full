@@ -54,34 +54,18 @@ public class MainApp extends Application {
         link.setPrefWidth(720);
         table.getColumns().addAll(type, link);
         Button scan = new Button("Start scan");
+        Button update = new Button("Update (new links)");
+        Button history = new Button("Load saved links");
         Button stop = new Button("Stop");
         Button export = new Button("Export CSV");
         stop.setDisable(true);
-        scan.setOnAction(e -> {
-            String address = url.getText().strip();
-            if (!address.matches("https?://.+")) {status.setText("Enter an http(s) URL"); return;}
-            discovered.clear();
-            ScanService service = new ScanService();
-            current.set(service);
-            scan.setDisable(true);
-            stop.setDisable(false);
-            Path selectedCookies = cookiePath;
-            Path selectedFolder = downloadAll.isSelected() ? downloadPath : null;
-            if (downloadAll.isSelected() && selectedFolder == null) {
-                status.setText("Select a download folder first");
-                scan.setDisable(false); stop.setDisable(true); return;
-            }
-            Thread worker = new Thread(() -> {
-                try {
-                    service.scan(address, selectedCookies, selectedFolder,
-                        item -> Platform.runLater(() -> discovered.add(item)),
-                        message -> Platform.runLater(() -> status.setText(message)));
-                } finally {
-                    Platform.runLater(() -> {scan.setDisable(false); stop.setDisable(true); current.compareAndSet(service, null);});
-                }
-            }, "media-scan");
-            worker.setDaemon(true);
-            worker.start();
+        scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status));
+        update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status));
+        history.setOnAction(e -> {
+            try (ScanStore store = new ScanStore()) {
+                discovered.setAll(store.history(url.getText().strip()));
+                status.setText("Loaded " + discovered.size() + " saved links");
+            } catch (Exception ex) { status.setText("History error: " + ex.getMessage()); }
         });
         stop.setOnAction(e -> {
             ScanService service = current.get();
@@ -100,13 +84,44 @@ public class MainApp extends Application {
             catch (IOException ex) { status.setText("Export failed: " + ex.getMessage()); }
         });
         HBox cookieRow = new HBox(8, pick, clear, cookies);
-        HBox controls = new HBox(8, scan, stop, export);
+        HBox controls = new HBox(8, scan, update, history, stop, export);
         VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
         stage.setTitle("Media Scraper Full");
         stage.setScene(new Scene(root, 960, 620));
         stage.show();
+    }
+
+    private void runScan(boolean updateOnly, TextField url, CheckBox downloadAll, Button scan, Button update,
+                         Button stop, Label status) {
+        String address = url.getText().strip();
+        if (!address.matches("https?://.+")) { status.setText("Enter an http(s) URL"); return; }
+        Path folder = downloadAll.isSelected() ? downloadPath : null;
+        if (downloadAll.isSelected() && folder == null) { status.setText("Select a download folder first"); return; }
+        discovered.clear();
+        ScanService service = new ScanService();
+        current.set(service);
+        scan.setDisable(true);
+        update.setDisable(true);
+        stop.setDisable(false);
+        Path selectedCookies = cookiePath;
+        Thread worker = new Thread(() -> {
+            try {
+                service.scan(address, selectedCookies, folder, updateOnly,
+                    item -> Platform.runLater(() -> discovered.add(item)),
+                    message -> Platform.runLater(() -> status.setText(message)));
+            } finally {
+                Platform.runLater(() -> {
+                    scan.setDisable(false);
+                    update.setDisable(false);
+                    stop.setDisable(true);
+                    current.compareAndSet(service, null);
+                });
+            }
+        }, updateOnly ? "media-update" : "media-scan");
+        worker.setDaemon(true);
+        worker.start();
     }
 
     private static String quote(String value) {return "\"" + value.replace("\"", "\"\"") + "\"";}
