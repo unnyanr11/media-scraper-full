@@ -10,15 +10,17 @@ import java.util.function.Consumer;
 
 public final class ScanService {
     private final AtomicBoolean stopped = new AtomicBoolean();
+    private int downloaded = 0;
     private final Set<String> seen = new LinkedHashSet<>();
     private final List<MediaItem> items = new ArrayList<>();
 
     public void stop() { stopped.set(true); }
 
-    public void scan(String target, Path cookiesFile, Consumer<MediaItem> onItem, Consumer<String> status) {
+    public void scan(String target, Path cookiesFile, Path downloadFolder, Consumer<MediaItem> onItem, Consumer<String> status) {
         stopped.set(false);
         seen.clear();
         items.clear();
+        downloaded = 0;
         URI uri = URI.create(target);
         if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null) {
             throw new IllegalArgumentException("Enter a valid http(s) URL");
@@ -44,7 +46,7 @@ public final class ScanService {
                 int idle = 0;
                 int lastCount = -1;
                 for (int scroll = 0; scroll < 80 && !stopped.get(); scroll++) {
-                    collect(page, onItem);
+                    collect(page, context, downloadFolder, onItem, status);
                     if (items.size() == lastCount) idle++; else idle = 0;
                     lastCount = items.size();
                     status.accept("Scroll " + scroll + " | Discovered " + items.size() + " links");
@@ -60,7 +62,7 @@ public final class ScanService {
                     page.evaluate("() => window.scrollBy(0, Math.max(500, window.innerHeight * .85))");
                     page.waitForTimeout(1100);
                 }
-                status.accept(stopped.get() ? "Stopped" : "Scan completed: " + items.size() + " links");
+                status.accept(stopped.get() ? "Stopped" : "Scan completed: " + items.size() + " links; " + downloaded + " files downloaded");
             } finally { context.close(); }
         } catch (Exception e) {
             status.accept("Scan failed: " + e.getMessage());
@@ -68,7 +70,7 @@ public final class ScanService {
     }
 
     @SuppressWarnings("unchecked")
-    private void collect(Page page, Consumer<MediaItem> consumer) {
+    private void collect(Page page, BrowserContext context, Path folder, Consumer<MediaItem> consumer, Consumer<String> status) {
         Object result = page.evaluate("""
           () => {
             const found = [];
@@ -105,6 +107,9 @@ public final class ScanService {
                 MediaItem item = new MediaItem(page.url(), url, type);
                 items.add(item);
                 consumer.accept(item);
+                if (folder != null && (type.equals("image") || type.equals("video"))) {
+                    if (MediaDownloader.download(context, item, folder, items.size(), stopped, status)) downloaded++;
+                }
             }
         }
     }
