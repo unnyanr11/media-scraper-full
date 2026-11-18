@@ -97,6 +97,7 @@ public class MainApp extends Application {
         });
         clearQueue.setOnAction(e -> { queuedUrls.clear(); queueStatus.setText("0 URLs queued"); });
         Button export = new Button("Export CSV");
+        Button exportJson = new Button("Export JSON");
         stop.setDisable(true);
         scan.setOnAction(e -> runScan(false, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
         update.setOnAction(e -> runScan(true, url, downloadAll, scan, update, stop, status, pageLimit.getValue(), urlFilter.getText()));
@@ -122,8 +123,18 @@ public class MainApp extends Application {
             try { Files.writeString(file.toPath(), csv.toString()); status.setText("Exported " + discovered.size() + " links"); }
             catch (IOException ex) { status.setText("Export failed: " + ex.getMessage()); }
         });
+        exportJson.setOnAction(e -> {
+            FileChooser chooser = new FileChooser();
+            chooser.setInitialFileName("media-links.json");
+            var file = chooser.showSaveDialog(stage);
+            if (file == null) return;
+            try {
+                JsonExporter.write(file.toPath(), List.copyOf(discovered));
+                status.setText("Exported " + discovered.size() + " entries as JSON");
+            } catch (IOException ex) { status.setText("JSON export failed: " + ex.getMessage()); }
+        });
         HBox cookieRow = new HBox(8, pick, clear, cookies);
-        HBox controls = new HBox(8, scan, update, history, stop, export);
+        HBox controls = new HBox(8, scan, update, history, stop, export, exportJson);
         VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, clearQueue), crawlerSettings, queueStatus, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
