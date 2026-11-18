@@ -72,6 +72,13 @@ public class MainApp extends Application {
         Button importFile = new Button("Import URL file");
         Button sequence = new Button("Generate sequence");
         Button clearQueue = new Button("Clear queue");
+        Button savedSources = new Button("Queue saved sources");
+        savedSources.setOnAction(e -> {
+            try (ScanStore store = new ScanStore()) {
+                addQueued(store.sources(), queueStatus);
+                status.setText("Loaded saved source URLs into the queue");
+            } catch (Exception ex) { status.setText("Unable to load saved sources: " + ex.getMessage()); }
+        });
         clipboard.setOnAction(e -> {
             String raw = Clipboard.getSystemClipboard().hasString()
                 ? Clipboard.getSystemClipboard().getString() : "";
@@ -135,7 +142,7 @@ public class MainApp extends Application {
         });
         HBox cookieRow = new HBox(8, pick, clear, cookies);
         HBox controls = new HBox(8, scan, update, history, stop, export, exportJson);
-        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, clearQueue), crawlerSettings, queueStatus, controls, status, table);
+        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new HBox(8, clipboard, importFile, sequence, savedSources, clearQueue), crawlerSettings, queueStatus, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
         stage.setTitle("Media Scraper Full");
