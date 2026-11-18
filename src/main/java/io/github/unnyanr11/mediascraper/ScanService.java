@@ -36,6 +36,23 @@ public final class ScanService {
                     context.addCookies(cookies);
                     status.accept("Imported " + cookies.size() + " cookies into isolated context");
                 }
+                // Handle direct image/video links (including generated sequences) without page scraping.
+                String lowerPath = uri.getPath().toLowerCase(java.util.Locale.ROOT);
+                String directType = lowerPath.matches(".*\\.(jpg|jpeg|png|gif|webp|avif)")
+                    ? "image" : (lowerPath.matches(".*\\.(mp4|webm|mov)") ? "video" : null);
+                if (directType != null) {
+                    MediaItem item = new MediaItem(target, target, directType);
+                    boolean fresh = store.record(target, item);
+                    if (!updateOnly || fresh) onItem.accept(item);
+                    if (downloadFolder != null && (!updateOnly || fresh) && !store.downloaded(target, item)) {
+                        if (MediaDownloader.download(context, item, downloadFolder, 1, stopped, status)) {
+                            store.markDownloaded(target, item);
+                            downloaded++;
+                        }
+                    }
+                    status.accept("Direct media: " + (downloaded > 0 ? "downloaded" : "discovered"));
+                    return;
+                }
                 Page page = context.newPage();
                 page.setDefaultTimeout(10_000);
                 status.accept("Opening webpage...");
