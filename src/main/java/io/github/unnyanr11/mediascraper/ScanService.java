@@ -95,7 +95,7 @@ public final class ScanService {
                             Locator next = page.locator("[aria-label='Next'], [aria-label='Next slide'], button.swiper-button-next");
                             if (next.count() > 0 && next.first().isVisible()) {
                                 next.first().click(new Locator.ClickOptions().setTimeout(1500));
-                                collect(page, context, downloadFolder, store, target, updateOnly, urlFilter, onItem, status);
+                                collect(page, context, downloadFolder, store, target, updateOnly, urlFilter, extensions, onItem, status);
                             }
                         } catch (PlaywrightException ignored) {}
                         page.evaluate("() => window.scrollBy(0, Math.max(500, window.innerHeight * .85))");
@@ -177,7 +177,7 @@ public final class ScanService {
             if (extensions != null && !extensions.isBlank() && !type.equals("page")) {
                 String path = URI.create(url).getPath().toLowerCase(Locale.ROOT);
                 boolean matches = Arrays.stream(extensions.toLowerCase(Locale.ROOT).split(","))
-                    .map(String::trim).map(ext -> ext.replaceFirst("^\\\\.", ""))
+                    .map(String::trim).map(ext -> ext.startsWith(".") ? ext.substring(1) : ext)
                     .filter(ext -> !ext.isBlank()).anyMatch(ext -> path.endsWith("." + ext));
                 if (!matches) continue;
             }
