@@ -128,8 +128,8 @@ public final class ScanService {
         Path root = runtime.getParent();
         if (root == null) return options;
         Path browsers = root.resolve("app").resolve("browsers");
-        if (!Files.isDirectory(brows)) return options;
-        try (var files = Files.walk(brows, 6)) {
+        if (!Files.isDirectory(browsers)) return options;
+        try (var files = Files.walk(browsers, 6)) {
             var chrome = files.filter(Files::isRegularFile)
                 .filter(path -> path.getFileName().toString().equalsIgnoreCase("chrome.exe"))
                 .findFirst();
