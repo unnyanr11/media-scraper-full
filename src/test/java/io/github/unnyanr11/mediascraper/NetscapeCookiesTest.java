@@ -17,4 +17,24 @@ class NetscapeCookiesTest {
             assertTrue(cookies.get(1).httpOnly);
         } finally {Files.deleteIfExists(file);}
     }
+
+    @Test void acceptsMultilinePasteWithHeadersAndPreservesEncodedValues() throws Exception {
+        String pasted = "\uFEFF" + String.join("\r\n",
+            "# Netscape HTTP Cookie File",
+            "# Generated file",
+            "",
+            ".example.org\tTRUE\t/\tTRUE\t4102444800\tsessionid\ttest%3Aabc%2Bdef",
+            "#HttpOnly_.example.org\tTRUE\t/\tTRUE\t0\tempty\t",
+            ".example.org\tTRUE\t/\tTRUE\t1\told\texpired");
+        var input = CookieInput.paste(pasted);
+        assertEquals(2, input.load().size());
+        assertEquals("test%3Aabc%2Bdef", input.load().getFirst().value);
+        assertTrue(input.load().getLast().httpOnly);
+        assertEquals("", input.load().getLast().value);
+        assertFalse(input.toString().contains("test%3Aabc"));
+        var bad = assertThrows(java.io.IOException.class,
+            () -> CookieInput.paste("# title\nmalformed secret"));
+        assertEquals("Invalid Netscape cookie at line 2", bad.getMessage());
+        assertThrows(java.io.IOException.class, () -> CookieInput.paste("# header only"));
+    }
 }

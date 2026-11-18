@@ -1,11 +1,14 @@
 package io.github.unnyanr11.mediascraper;
 
+import com.microsoft.playwright.options.Cookie;
+import java.io.IOException;
+import java.util.List;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.nio.file.Path;
 
-record TaskOptions(Path cookies, String proxy, Path rules) {
+record TaskOptions(CookieInput cookies, String proxy, Path rules) {
     TaskOptions {
         if (!proxy.isBlank()) {
             URI address = URI.create(proxy);
@@ -15,6 +18,14 @@ record TaskOptions(Path cookies, String proxy, Path rules) {
                 throw new IllegalArgumentException("Use a proxy address such as http://proxy.example:8080");
             }
         }
+    }
+
+    boolean needsPastedCookies() {
+        return cookies != null && !cookies.available();
+    }
+
+    List<Cookie> loadCookies() throws IOException {
+        return cookies == null ? List.of() : cookies.load();
     }
 
     ProxySelector proxySelector() {

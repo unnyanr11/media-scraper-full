@@ -148,4 +148,54 @@ class DownloadQueueTest {
             }
         }
     }
+
+    @Test void pendingPastedCookiesStayInMemoryAndCanBeReenteredAfterRestart() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var hits = new AtomicInteger();
+        var received = new AtomicReference<String>();
+        server.createContext("/protected.png", exchange -> {
+            try (exchange) {
+                hits.incrementAndGet();
+                String cookie = exchange.getRequestHeaders().getFirst("Cookie");
+                received.set(cookie);
+                if (!"sessionid=dummy%3Afresh".equals(cookie)) {
+                    exchange.sendResponseHeaders(401, -1);
+                    return;
+                }
+                exchange.getResponseHeaders().set("Content-Type", "image/png");
+                exchange.sendResponseHeaders(200, 1);
+                exchange.getResponseBody().write(9);
+            }
+        });
+        server.start();
+        String source = "http://127.0.0.1:" + server.getAddress().getPort() + "/protected.png";
+        Path database = workspace.resolve("cookies.sqlite");
+        Path folder = workspace.resolve("protected");
+        MediaItem item = new MediaItem(source, source, "image", source, "", "", source);
+        var previous = CookieInput.paste("127.0.0.1\tFALSE\t/\tFALSE\t0\tsessionid\tdummy%3Aprevious");
+        try (var store = new ScanStore(database); var queue = new DownloadQueue(store, 1, ignored -> {})) {
+            store.record(source, item);
+            store.enqueue(new ScanStore.Transfer(source, item, folder, new TaskOptions(previous, "", null)));
+            assertFalse(store.pending(null, null, Map.of(previous.reference(), previous)).getFirst().options().needsPastedCookies());
+            assertTrue(store.pending(null, null).getFirst().options().needsPastedCookies());
+            assertEquals(0, queue.download(store.pending(null, null), null, null));
+            assertEquals(0, hits.get());
+            store.enqueue(new ScanStore.Transfer(source, item, folder, PUBLIC));
+            assertTrue(store.pending(null, null).getFirst().options().needsPastedCookies());
+            try (var sql = java.sql.DriverManager.getConnection("jdbc:sqlite:" + database);
+                 var statement = sql.createStatement(); var rows = statement.executeQuery("SELECT cookies FROM transfers")) {
+                assertTrue(rows.next());
+                assertEquals(previous.reference(), rows.getString(1));
+            }
+        }
+        var fresh = CookieInput.paste("127.0.0.1\tFALSE\t/\tFALSE\t0\tsessionid\tdummy%3Afresh");
+        var options = new TaskOptions(fresh, "", null);
+        var settings = new ScanService.Settings(folder, true, false, true, 1, "", Set.of(), 1);
+        new ScanService(database, Map.of(fresh.reference(), fresh)).scan(source, options, settings, ignored -> {}, ignored -> {});
+        assertEquals("sessionid=dummy%3Afresh", received.get());
+        try (var store = new ScanStore(database)) {
+            assertTrue(store.pending(null, null).isEmpty());
+            assertTrue(store.downloaded(source, item));
+        }
+    }
 }

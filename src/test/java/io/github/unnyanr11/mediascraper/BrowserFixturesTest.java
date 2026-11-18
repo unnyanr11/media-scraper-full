@@ -210,6 +210,35 @@ class BrowserFixturesTest {
         }
     }
 
+    @Test void scansAuthenticatedPageWithPastedCookies() throws Exception {
+        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try {
+            server.createContext("/profile", exchange -> {
+                try (exchange) {
+                    if (!"sessionid=dummy%3Abrowser".equals(exchange.getRequestHeaders().getFirst("Cookie"))) {
+                        exchange.sendResponseHeaders(401, -1);
+                        return;
+                    }
+                    byte[] bytes = "<img src='/private.png'>".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                    exchange.getResponseHeaders().set("Content-Type", "text/html");
+                    exchange.sendResponseHeaders(200, bytes.length);
+                    exchange.getResponseBody().write(bytes);
+                }
+            });
+            server.start();
+            String source = "http://127.0.0.1:" + server.getAddress().getPort() + "/profile";
+            var input = CookieInput.paste("# Netscape HTTP Cookie File\n127.0.0.1\tFALSE\t/\tFALSE\t0\tsessionid\tdummy%3Abrowser");
+            var options = new TaskOptions(input, "", null);
+            var settings = new ScanService.Settings(null, false, false, false, 1, "", Set.of(), 1);
+            var results = new ArrayList<MediaItem>();
+            var statuses = new ArrayList<String>();
+            new ScanService(workspace.resolve("authenticated.sqlite")).scan(source, options, settings, results::add, statuses::add);
+            assertTrue(results.stream().anyMatch(item -> item.url().endsWith("/private.png")), statuses::toString);
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private Page fixture(String address, String html) {
         Page page = browser.newPage();
         page.route("**/*", route -> route.fulfill(new Route.FulfillOptions().setStatus(200)

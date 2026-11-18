@@ -9,6 +9,8 @@ import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
+import javafx.stage.Window;
+import javafx.event.ActionEvent;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.LinkedHashSet;
 import java.util.List;
 import javafx.scene.input.Clipboard;
@@ -24,13 +27,14 @@ import javafx.scene.input.Clipboard;
 public class MainApp extends Application {
     private final javafx.collections.ObservableList<MediaItem> discovered = FXCollections.observableArrayList();
     private final AtomicReference<ScanService> current = new AtomicReference<>();
-    private Path cookiePath;
+    private CookieInput cookieInput;
+    private final Map<String, CookieInput> pastedCookies = new HashMap<>();
     private Path downloadPath;
     private Path rulesPath;
     private final List<String> queuedUrls = new ArrayList<>();
     private final Map<String, SessionSelection> sessions = new HashMap<>();
 
-    private record SessionSelection(Path cookieFile, String proxy) {}
+    private record SessionSelection(CookieInput cookies, String proxy) {}
     private record ScanTask(String source, TaskOptions options) {}
 
     @Override public void start(Stage stage) {
@@ -43,12 +47,17 @@ public class MainApp extends Application {
             chooser.setTitle("Select Netscape cookies.txt");
             var file = chooser.showOpenDialog(stage);
             if (file != null) {
-                cookiePath = file.toPath();
+                cookieInput = CookieInput.file(file.toPath());
                 cookies.setText(file.getName());
             }
         });
+        Button paste = new Button("Paste cookies…");
+        paste.setOnAction(e -> pasteCookies(stage).ifPresent(input -> {
+            cookieInput = input;
+            cookies.setText(input.label());
+        }));
         Button clear = new Button("Clear");
-        clear.setOnAction(e -> {cookiePath = null; cookies.setText("No cookies (public browsing)");});
+        clear.setOnAction(e -> {cookieInput = null; cookies.setText("No cookies (public browsing)");});
         TextField proxy = new TextField();
         proxy.setPromptText("HTTP proxy, e.g. http://proxy.example:8080");
         Button configureQueue = new Button("Configure queued tasks");
@@ -154,8 +163,13 @@ public class MainApp extends Application {
                 List<String> addresses = queuedUrls.isEmpty() ? List.of(url.getText().strip()) : List.copyOf(queuedUrls);
                 for (String source : addresses) {
                     ScanService.webUri(source);
-                    SessionSelection selection = sessions.getOrDefault(source, new SessionSelection(cookiePath, proxy.getText()));
-                    batch.add(new ScanTask(source, new TaskOptions(selection.cookieFile(), selection.proxy().strip(), rulesPath)));
+                    SessionSelection selection = sessions.getOrDefault(source, new SessionSelection(cookieInput, proxy.getText()));
+                    batch.add(new ScanTask(source, new TaskOptions(selection.cookies(), selection.proxy().strip(), rulesPath)));
+                }
+                // Keep previous task credentials available for pending downloads until the app closes.
+                for (ScanTask task : batch) {
+                    CookieInput input = task.options().cookies();
+                    if (input != null && input.pasted() != null) pastedCookies.put(input.reference(), input);
                 }
                 discovered.clear();
                 startWorker(scan, update, resume, stop, pause, status, (service, report) -> {
@@ -232,7 +246,7 @@ public class MainApp extends Application {
                 status.setText("Exported " + discovered.size() + " entries as JSON");
             } catch (IOException ex) { status.setText("JSON export failed: " + ex.getMessage()); }
         });
-        FlowPane cookieRow = new FlowPane(8, 6, pick, clear, cookies, proxy);
+        FlowPane cookieRow = new FlowPane(8, 6, paste, pick, clear, cookies, proxy);
         FlowPane controls = new FlowPane(8, 6, scan, update, history, stop, pause, resume, export, exportJson, backup);
         VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, new FlowPane(8, 6, clipboard, importFile, sequence, savedSources, configureQueue, clearQueue), new FlowPane(8, 6, archive, parallel, new Label("Workers"), workers, rules, rulesLabel), crawlerSettings, queueStatus, controls, status, table);
         root.setPadding(new Insets(16));
@@ -246,7 +260,7 @@ public class MainApp extends Application {
 
     private void startWorker(Button scan, Button update, Button resume, Button stop, Button pause, Label status,
                              java.util.function.BiConsumer<ScanService, java.util.function.Consumer<String>> work) {
-        ScanService service = new ScanService();
+        ScanService service = new ScanService(null, pastedCookies);
         if (!current.compareAndSet(null, service)) return;
         List<Button> startButtons = List.of(scan, update, resume);
         List<Button> stopButtons = List.of(stop, pause);
@@ -275,7 +289,8 @@ public class MainApp extends Application {
         ListView<String> sources = new ListView<>(FXCollections.observableArrayList(queuedUrls));
         sources.setPrefSize(650, 240);
         Label selection = new Label("Select a queued URL");
-        Button choose = new Button("Set cookies and proxy");
+        Button choose = new Button("Browse cookies.txt…");
+        Button paste = new Button("Paste cookies…");
         Button publicSession = new Button("Use public session");
         Button defaults = new Button("Use scan defaults");
         sources.getSelectionModel().selectedItemProperty().addListener((observable, before, source) ->
@@ -287,7 +302,13 @@ public class MainApp extends Application {
             chooser.setTitle("Select Netscape cookies for this URL");
             var file = chooser.showOpenDialog(dialog.getDialogPane().getScene().getWindow());
             if (file == null) return;
-            editSession(source, file.toPath(), defaultProxy, selection);
+            editSession(source, CookieInput.file(file.toPath()), defaultProxy, selection);
+        });
+        paste.setOnAction(e -> {
+            String source = sources.getSelectionModel().getSelectedItem();
+            if (source == null) return;
+            pasteCookies(dialog.getDialogPane().getScene().getWindow())
+                .ifPresent(input -> editSession(source, input, defaultProxy, selection));
         });
         publicSession.setOnAction(e -> {
             String source = sources.getSelectionModel().getSelectedItem();
@@ -297,20 +318,48 @@ public class MainApp extends Application {
             sessions.remove(sources.getSelectionModel().getSelectedItem());
             showSession(selection, null);
         });
-        dialog.getDialogPane().setContent(new VBox(8, sources, selection, new HBox(8, choose, publicSession, defaults)));
+        dialog.getDialogPane().setContent(new VBox(8, sources, selection, new HBox(8, paste, choose, publicSession, defaults)));
         dialog.showAndWait();
     }
 
-    private void editSession(String source, Path file, String defaultProxy, Label label) {
-        String previous = sessions.getOrDefault(source, new SessionSelection(file, defaultProxy)).proxy();
+    private static Optional<CookieInput> pasteCookies(Window owner) {
+        Dialog<CookieInput> dialog = new Dialog<>();
+        dialog.initOwner(owner);
+        dialog.setTitle("Paste cookies");
+        TextArea input = new TextArea();
+        input.setPromptText("Paste the full tab-separated Netscape cookies.txt text here");
+        input.setPrefColumnCount(64);
+        input.setPrefRowCount(10);
+        Label feedback = new Label("Pasted cookies stay in memory until you close the app.");
+        feedback.setWrapText(true);
+        dialog.getDialogPane().setContent(new VBox(8, input, feedback));
+        ButtonType use = new ButtonType("Use cookies", ButtonBar.ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(use, ButtonType.CANCEL);
+        var parsed = new AtomicReference<CookieInput>();
+        dialog.getDialogPane().lookupButton(use).addEventFilter(ActionEvent.ACTION, event -> {
+            try {
+                parsed.set(CookieInput.paste(input.getText()));
+            } catch (IOException ex) {
+                feedback.setText(ex.getMessage());
+                event.consume();
+            }
+        });
+        dialog.setResultConverter(button -> button == use ? parsed.get() : null);
+        dialog.setOnShown(event -> Platform.runLater(input::requestFocus));
+        dialog.setOnHidden(event -> input.clear());
+        return dialog.showAndWait();
+    }
+
+    private void editSession(String source, CookieInput input, String defaultProxy, Label label) {
+        String previous = sessions.getOrDefault(source, new SessionSelection(input, defaultProxy)).proxy();
         TextInputDialog dialog = new TextInputDialog(previous);
         dialog.setTitle("Task proxy");
         dialog.setHeaderText("Enter an HTTP proxy or leave blank for a direct connection");
         dialog.showAndWait().ifPresent(value -> {
             try {
                 String address = value.strip();
-                new TaskOptions(file, address, null);
-                SessionSelection session = new SessionSelection(file, address);
+                new TaskOptions(input, address, null);
+                SessionSelection session = new SessionSelection(input, address);
                 sessions.put(source, session);
                 showSession(label, session);
             } catch (IllegalArgumentException ex) {
@@ -323,7 +372,7 @@ public class MainApp extends Application {
         if (selection == null) {
             label.setText("Uses the scan's default cookies and proxy");
         } else {
-            label.setText((selection.cookieFile() == null ? "Public session" : selection.cookieFile().getFileName().toString())
+            label.setText((selection.cookies() == null ? "Public session" : selection.cookies().label())
                 + (selection.proxy().isBlank() ? " · Direct connection" : " · " + selection.proxy()));
         }
     }

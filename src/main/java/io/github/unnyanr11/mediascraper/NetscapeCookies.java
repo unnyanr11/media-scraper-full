@@ -12,11 +12,18 @@ public final class NetscapeCookies {
     private NetscapeCookies() {}
 
     public static List<Cookie> load(Path path) throws IOException {
+        return parse(Files.readString(path));
+    }
+
+    static List<Cookie> parse(String text) throws IOException {
+        if (text.startsWith("\uFEFF")) text = text.substring(1);
         var cookies = new ArrayList<Cookie>();
         int lineNumber = 0;
-        for (String input : Files.readAllLines(path)) {
+        long now = Instant.now().getEpochSecond();
+        var lines = text.lines().iterator();
+        while (lines.hasNext()) {
             lineNumber++;
-            String line = input;
+            String line = lines.next();
             if (line.isBlank() || (line.startsWith("#") && !line.startsWith("#HttpOnly_"))) continue;
             boolean httpOnly = line.startsWith("#HttpOnly_");
             if (httpOnly) line = line.substring("#HttpOnly_".length());
@@ -29,7 +36,7 @@ public final class NetscapeCookies {
             long expires;
             try { expires = Long.parseLong(fields[4]); }
             catch (NumberFormatException e) { throw new IOException("Invalid cookie expiry at line " + lineNumber, e); }
-            if (expires > 0 && expires <= Instant.now().getEpochSecond()) continue;
+            if (expires > 0 && expires <= now) continue;
             if (fields[5].isEmpty()) throw new IOException("Missing cookie name at line " + lineNumber);
             Cookie cookie = new Cookie(fields[5], fields[6]);
             String bareDomain = domain.startsWith(".") ? domain.substring(1) : domain;

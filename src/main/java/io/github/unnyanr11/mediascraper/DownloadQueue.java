@@ -53,6 +53,7 @@ final class DownloadQueue implements AutoCloseable {
         List<ScanStore.Transfer> duplicates = new ArrayList<>();
         for (var job : jobs) {
             if (isPaused()) break;
+            if (job.options().needsPastedCookies()) continue;
             if (!scheduled.add(job.folder() + "|" + fileKey(job.item()))) {
                 duplicates.add(job);
                 continue;
@@ -197,7 +198,7 @@ final class DownloadQueue implements AutoCloseable {
         ClientKey key = new ClientKey(options, cookies);
         HttpClient existing = clients.get(key);
         if (existing != null) return existing;
-        if (cookies == null) cookies = options.cookies() == null ? List.of() : NetscapeCookies.load(options.cookies());
+        if (cookies == null) cookies = options.loadCookies();
         HttpClient next = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20))
             .proxy(options.proxySelector()).cookieHandler(new TransferCookies(cookies))
             .followRedirects(HttpClient.Redirect.NORMAL).build();

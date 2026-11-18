@@ -35,10 +35,16 @@ public final class ScanService {
     private final AtomicBoolean downloadsPaused = new AtomicBoolean();
     private volatile DownloadQueue transfers;
     private final Path history;
+    private final Map<String, CookieInput> pasted;
 
     public ScanService() { this(null); }
 
-    ScanService(Path history) { this.history = history; }
+    ScanService(Path history) { this(history, Map.of()); }
+
+    ScanService(Path history, Map<String, CookieInput> pasted) {
+        this.history = history;
+        this.pasted = Map.copyOf(pasted);
+    }
 
     private ScanStore openStore() throws SQLException {
         return history == null ? new ScanStore() : new ScanStore(history);
@@ -80,7 +86,17 @@ public final class ScanService {
             if (isStopped()) return;
             int downloaded = 0;
             if (settings.download) {
-                downloaded = runTransfers(store, store.pending(target, settings.folder), options, cookies, settings.workers, status);
+                var jobs = store.pending(target, settings.folder, pasted);
+                if (options.cookies() != null) {
+                    // An explicit new session for this source can reauthenticate jobs from before restart.
+                    for (var job : jobs) {
+                        if (!job.options().needsPastedCookies()) continue;
+                        var restored = new TaskOptions(options.cookies(), job.options().proxy(), job.options().rules());
+                        store.enqueue(new ScanStore.Transfer(job.source(), job.item(), job.folder(), restored));
+                    }
+                    jobs = store.pending(target, settings.folder, pasted);
+                }
+                downloaded = runTransfers(store, jobs, options, cookies, settings.workers, status);
             }
             if (settings.archive) new HtmlArchive(settings.folder, target).index();
             int pending = settings.download ? store.pending(target, settings.folder).size() : 0;
@@ -93,12 +109,15 @@ public final class ScanService {
 
     void resumeDownloads(int workers, Consumer<String> status) {
         try (ScanStore store = openStore()) {
-            var pending = store.pending(null, null);
+            var pending = store.pending(null, null, pasted);
             int saved = runTransfers(store, pending, null, null, workers, status);
             for (var archive : pending.stream().map(job -> new HtmlArchive.Location(job.folder(), job.source())).distinct().toList()) {
                 new HtmlArchive(archive.folder(), archive.source()).index();
             }
-            status.accept("Downloads · " + saved + " saved · " + store.pending(null, null).size() + " pending");
+            var remaining = store.pending(null, null, pasted);
+            long needsCookies = remaining.stream().filter(job -> job.options().needsPastedCookies()).count();
+            status.accept("Downloads · " + saved + " saved · " + remaining.size() + " pending"
+                + (needsCookies == 0 ? "" : " · " + needsCookies + " need fresh cookies. Paste again and scan their source."));
         } catch (SQLException | InterruptedException | IOException e) {
             if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             status.accept("Download queue error: " + e.getMessage());
@@ -366,7 +385,7 @@ public final class ScanService {
 
     private static BrowserContext context(Browser browser, TaskOptions options) throws IOException {
         BrowserContext context = browser.newContext();
-        if (options.cookies() != null) context.addCookies(NetscapeCookies.load(options.cookies()));
+        if (options.cookies() != null) context.addCookies(options.loadCookies());
         return context;
     }
 

@@ -198,11 +198,16 @@ public final class ScanStore implements AutoCloseable {
         update("""
             INSERT INTO transfers VALUES (?,?,?,?,?,?,?) ON CONFLICT(source,type,identity,folder)
             DO UPDATE SET cookies=excluded.cookies, proxy=excluded.proxy, rules=excluded.rules
+            WHERE excluded.cookies IS NOT NULL OR transfers.cookies IS NULL OR transfers.cookies NOT LIKE 'paste:%'
             """, job.source, job.item.type(), job.item.identity(), absolute(job.folder),
-            absolute(job.options.cookies()), job.options.proxy(), absolute(job.options.rules()));
+            job.options.cookies() == null ? null : job.options.cookies().reference(), job.options.proxy(), absolute(job.options.rules()));
     }
 
     synchronized List<Transfer> pending(String source, Path folder) throws SQLException {
+        return pending(source, folder, Map.of());
+    }
+
+    synchronized List<Transfer> pending(String source, Path folder, Map<String, CookieInput> pasted) throws SQLException {
         List<Transfer> jobs = new ArrayList<>();
         try (var stmt = statement("""
             SELECT a.post_url,a.url,a.type,a.post_id,a.published_at,a.caption,a.asset_id,
@@ -211,7 +216,7 @@ public final class ScanStore implements AutoCloseable {
             WHERE (? IS NULL OR t.source=?) AND (? IS NULL OR t.folder=?) ORDER BY t.rowid
             """, source, source, absolute(folder), absolute(folder)); var rs = stmt.executeQuery()) {
             while (rs.next()) jobs.add(new Transfer(rs.getString(8), item(rs), Path.of(rs.getString(9)),
-                new TaskOptions(path(rs.getString(10)), rs.getString(11), path(rs.getString(12)))));
+                new TaskOptions(CookieInput.restore(rs.getString(10), pasted), rs.getString(11), path(rs.getString(12)))));
         }
         return jobs;
     }
