@@ -5,7 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
-/** Exports discovered links as portable UTF-8 JSON without exporting authentication material. */
+/** Exports discovered links as portable UTF-8 JSON without authentication material. */
 public final class JsonExporter {
     private JsonExporter() {}
 
@@ -28,11 +28,11 @@ public final class JsonExporter {
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
             switch (ch) {
-                case '"' -> result.append("\\"");
-                case '\\' -> result.append("\\\\");
-                case '\n' -> result.append("\\n");
-                case '\r' -> result.append("\\r");
-                case '\t' -> result.append("\\t");
+                case '"' -> result.append('\\').append('"');
+                case '\\' -> result.append('\\').append('\\');
+                case '\n' -> result.append('\\').append('n');
+                case '\r' -> result.append('\\').append('r');
+                case '\t' -> result.append('\\').append('t');
                 default -> {
                     if (ch < 0x20) result.append(String.format("\\u%04x", (int) ch));
                     else result.append(ch);
