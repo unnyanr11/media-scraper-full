@@ -16,7 +16,7 @@ public final class ScanService {
 
     public void stop() { stopped.set(true); }
 
-    public void scan(String target, Path cookiesFile, Path downloadFolder, Consumer<MediaItem> onItem, Consumer<String> status) {
+    public void scan(String target, Path cookiesFile, Path downloadFolder, boolean updateOnly, Consumer<MediaItem> onItem, Consumer<String> status) {
         stopped.set(false);
         seen.clear();
         items.clear();
@@ -25,7 +25,8 @@ public final class ScanService {
         if (!Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null) {
             throw new IllegalArgumentException("Enter a valid http(s) URL");
         }
-        try (Playwright playwright = Playwright.create();
+        try (ScanStore store = new ScanStore();
+             Playwright playwright = Playwright.create();
              Browser browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(true))) {
             BrowserContext context = browser.newContext();
             try {
@@ -46,7 +47,7 @@ public final class ScanService {
                 int idle = 0;
                 int lastCount = -1;
                 for (int scroll = 0; scroll < 80 && !stopped.get(); scroll++) {
-                    collect(page, context, downloadFolder, onItem, status);
+                    collect(page, context, downloadFolder, store, target, updateOnly, onItem, status);
                     if (items.size() == lastCount) idle++; else idle = 0;
                     lastCount = items.size();
                     status.accept("Scroll " + scroll + " | Discovered " + items.size() + " links");
@@ -56,7 +57,7 @@ public final class ScanService {
                         Locator next = page.locator("[aria-label='Next'], [aria-label='Next slide'], button.swiper-button-next");
                         if (next.count() > 0 && next.first().isVisible()) {
                             next.first().click(new Locator.ClickOptions().setTimeout(1500));
-                            collect(page, onItem);
+                            collect(page, context, downloadFolder, store, target, updateOnly, onItem, status);
                         }
                     } catch (PlaywrightException ignored) {}
                     page.evaluate("() => window.scrollBy(0, Math.max(500, window.innerHeight * .85))");
@@ -70,7 +71,7 @@ public final class ScanService {
     }
 
     @SuppressWarnings("unchecked")
-    private void collect(Page page, BrowserContext context, Path folder, Consumer<MediaItem> consumer, Consumer<String> status) {
+    private void collect(Page page, BrowserContext context, Path folder, ScanStore store, String source, boolean updateOnly, Consumer<MediaItem> consumer, Consumer<String> status) {
         Object result = page.evaluate("""
           () => {
             const found = [];
@@ -106,9 +107,19 @@ public final class ScanService {
             if (seen.add(type + "|" + url)) {
                 MediaItem item = new MediaItem(page.url(), url, type);
                 items.add(item);
-                consumer.accept(item);
-                if (folder != null && (type.equals("image") || type.equals("video"))) {
-                    if (MediaDownloader.download(context, item, folder, items.size(), stopped, status)) downloaded++;
+                try {
+                    boolean isNew = store.record(source, item);
+                    if (!updateOnly || isNew) consumer.accept(item);
+                    if (folder != null && (type.equals("image") || type.equals("video"))
+                            && (!updateOnly || isNew) && !store.downloaded(source, item)) {
+                        if (MediaDownloader.download(context, item, folder, items.size(), stopped, status)) {
+                            store.markDownloaded(source, item);
+                            downloaded++;
+                        }
+                    }
+                } catch (java.sql.SQLException ex) {
+                    stopped.set(true);
+                    status.accept("History database error; stopping: " + ex.getMessage());
                 }
             }
         }
