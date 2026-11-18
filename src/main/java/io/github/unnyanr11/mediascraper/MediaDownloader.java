@@ -42,7 +42,7 @@ public final class MediaDownloader {
                 byte[] bytes = response.body();
                 if (bytes.length == 0) return false;
                 String extension = extension(mime);
-                String name = String.format("%06d_%s.%s", index, item.type(), extension);
+                String name = item.type() + "_" + Integer.toUnsignedString(item.url().hashCode(), 16) + "_" + Integer.toUnsignedString(item.url().length(), 16) + "." + extension;
                 Path target = destination.resolve(name);
                 Path tmp = Files.createTempFile(destination, ".media-", ".part");
                 try {
