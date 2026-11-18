@@ -33,6 +33,7 @@ public final class ScanService {
              Browser browser = playwright.chromium().launch(browserOptions())) {
             BrowserContext context = browser.newContext();
             try {
+                store.rememberSource(target);
                 if (cookiesFile != null) {
                     var cookies = NetscapeCookies.load(cookiesFile);
                     context.addCookies(cookies);
