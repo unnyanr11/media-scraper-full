@@ -18,6 +18,7 @@ public class MainApp extends Application {
     private final javafx.collections.ObservableList<MediaItem> discovered = FXCollections.observableArrayList();
     private final AtomicReference<ScanService> current = new AtomicReference<>();
     private Path cookiePath;
+    private Path downloadPath;
 
     @Override public void start(Stage stage) {
         TextField url = new TextField();
@@ -36,6 +37,14 @@ public class MainApp extends Application {
         Button clear = new Button("Clear");
         clear.setOnAction(e -> {cookiePath = null; cookies.setText("No cookies (public browsing)");});
         Label status = new Label("Ready");
+        Label folderLabel = new Label("No download folder selected");
+        Button chooseFolder = new Button("Download folder...");
+        chooseFolder.setOnAction(e -> {
+            javafx.stage.DirectoryChooser chooser = new javafx.stage.DirectoryChooser();
+            var folder = chooser.showDialog(stage);
+            if (folder != null) { downloadPath = folder.toPath(); folderLabel.setText(folder.getAbsolutePath()); }
+        });
+        CheckBox downloadAll = new CheckBox("Download all discovered images/videos");
         TableView<MediaItem> table = new TableView<>(discovered);
         TableColumn<MediaItem, String> type = new TableColumn<>("Type");
         type.setCellValueFactory(c -> new javafx.beans.property.SimpleStringProperty(c.getValue().type()));
@@ -57,9 +66,14 @@ public class MainApp extends Application {
             scan.setDisable(true);
             stop.setDisable(false);
             Path selectedCookies = cookiePath;
+            Path selectedFolder = downloadAll.isSelected() ? downloadPath : null;
+            if (downloadAll.isSelected() && selectedFolder == null) {
+                status.setText("Select a download folder first");
+                scan.setDisable(false); stop.setDisable(true); return;
+            }
             Thread worker = new Thread(() -> {
                 try {
-                    service.scan(address, selectedCookies,
+                    service.scan(address, selectedCookies, selectedFolder,
                         item -> Platform.runLater(() -> discovered.add(item)),
                         message -> Platform.runLater(() -> status.setText(message)));
                 } finally {
@@ -87,7 +101,7 @@ public class MainApp extends Application {
         });
         HBox cookieRow = new HBox(8, pick, clear, cookies);
         HBox controls = new HBox(8, scan, stop, export);
-        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, controls, status, table);
+        VBox root = new VBox(12, new Label("Media Scraper Full"), url, cookieRow, new HBox(8, chooseFolder, folderLabel), downloadAll, controls, status, table);
         root.setPadding(new Insets(16));
         VBox.setVgrow(table, Priority.ALWAYS);
         stage.setTitle("Media Scraper Full");
